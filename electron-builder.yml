@@ -1,0 +1,84 @@
+# electron-builder 配置
+#
+# 打包目标：Windows / macOS / Linux
+#
+# 产物：
+#   Windows: NSIS 安装包 + portable exe     → dist-app/wb-switch-Setup-<version>.exe
+#   macOS:   DMG 安装包 + zip               → dist-app/wb-switch-<version>.dmg
+#   Linux:   AppImage + deb                 → dist-app/wb-switch-<version>.AppImage
+
+appId: com.wbswitch.app
+productName: wb-switch
+copyright: MIT License
+
+directories:
+  output: dist-app
+  buildResources: build
+
+# 直接复用 node_modules 里已下载的 Electron 运行时，避免打包时再次联网
+electronDist: node_modules/electron/dist
+
+asar: true
+
+files:
+  - build/app/**/*
+  - '!**/*.map'
+
+extraMetadata:
+  main: build/app/main.cjs
+  description: WorkBuddy 模型源切换工具
+
+# ── Windows ──
+win:
+  icon: assets/icon.ico
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+
+nsis:
+  artifactName: wb-switch-Setup-${version}.exe
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  allowElevation: true
+  runAfterFinish: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: wb-switch
+  uninstallDisplayName: wb-switch
+
+portable:
+  artifactName: wb-switch-${version}-portable.exe
+
+# ── macOS ──
+# icns 图标：Windows 上无法生成 icns，electron-builder 会用 PNG 自动生成
+# 不签名不公证，用户需要右键「打开」绕过 Gatekeeper
+mac:
+  icon: assets/icon.png
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+
+dmg:
+  artifactName: wb-switch-${version}.dmg
+  contents:
+    - { x: 130, y: 220 }
+    - { x: 410, y: 220, type: link, path: /Applications }
+
+# ── Linux ──
+linux:
+  icon: assets/icon.png
+  category: Development
+  target:
+    - target: AppImage
+      arch:
+        - x64
+    - target: deb
+      arch:
+        - x64

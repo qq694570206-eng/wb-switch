@@ -1,0 +1,43 @@
+# 依赖与构建产物
+node_modules/
+dist/
+build/
+dist-exe/
+dist-app/
+release/
+
+# 日志与临时文件
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+*.tmp
+*.bak
+*.swp
+*~
+
+# 本工具在项目内测试产生的数据
+.wb-switch-local/
+
+# ── 敏感信息：绝不提交 ──
+
+# 环境变量文件
+.env
+.env.*
+.env.local
+
+# WorkBuddy 配置目录（含真实 API Key）
+.workbuddy/
+
+# 任何包含密钥的 JSON
+*-models.json
+models.json
+
+# IDE 配置
+.vscode/
+.idea/
+*.code-workspace
+
+# 操作系统文件
+Desktop.ini
+$RECYCLEBIN/

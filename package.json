@@ -1,0 +1,59 @@
+{
+  "name": "wb-switch",
+  "version": "1.7.0",
+  "description": "WorkBuddy 模型源切换工具（桌面图形界面 + 命令行）",
+  "type": "module",
+  "bin": {
+    "wb-switch": "./dist/cli.js"
+  },
+  "main": "./dist/cli.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "build:exe": "node scripts/build-exe.mjs",
+    "dev": "tsc --watch",
+    "start": "node dist/cli.js",
+    "test": "npm run build && node tests/smoke.mjs && node tests/modelfetch.mjs && node tests/proxy.mjs",
+    "test:exe": "node tests/smoke.mjs dist-exe/wb-switch.exe",
+    "typecheck": "tsc --noEmit",
+    "icon": "node scripts/make-icon.mjs",
+    "clean": "node scripts/clean.mjs",
+    "link": "npm link",
+    "gui": "node scripts/build-gui.mjs && electron build/app",
+    "build:app": "node scripts/build-gui.mjs",
+    "build:portable": "node scripts/build-portable.mjs --portable-only",
+    "clean:all": "node scripts/clean.mjs --all",
+    "test:models": "node tests/modelfetch.mjs",
+    "build:win": "node scripts/build-portable.mjs",
+    "build:mac": "node scripts/build-portable.mjs --mac",
+    "build:linux": "node scripts/build-portable.mjs --linux"
+  },
+  "keywords": [
+    "workbuddy",
+    "models",
+    "switch",
+    "profile",
+    "config",
+    "ccswitch",
+    "cli"
+  ],
+  "author": {
+    "name": "wb-switch"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "electron": "^45.0.0",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.28.2",
+    "postject": "^1.0.0-alpha.6",
+    "resedit": "^3.1.0",
+    "typescript": "^5.4.0"
+  }
+}

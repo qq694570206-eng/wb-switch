@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;"
+    />
+    <title>wb-switch · WorkBuddy 模型源切换</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <!-- ───────────── 侧栏 ───────────── -->
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 8h13l-3-3" />
+              <path d="M20 16H7l3 3" />
+            </svg>
+          </div>
+          <div class="brand-text">
+            <strong>wb-switch</strong>
+            <span>模型源切换</span>
+          </div>
+        </div>
+
+        <div class="current-card" id="currentCard">
+          <div class="current-label">当前源</div>
+          <div class="current-name" id="currentName">—</div>
+          <div class="current-meta" id="currentMeta">正在读取…</div>
+        </div>
+
+        <div class="side-actions">
+          <button class="btn btn-primary" id="btnNew">
+            <span class="plus">＋</span> 新建源
+          </button>
+          <button class="btn btn-quiet" id="btnSnapshot" title="把磁盘上的 models.json 存成一个新源">
+            保存当前配置
+          </button>
+        </div>
+
+        <div class="list-head">
+          <span>全部源</span>
+          <span class="list-count" id="profileCount">0</span>
+        </div>
+
+        <div class="batch-bar" id="batchBar" hidden>
+          <span id="batchCount">已选 0 个源</span>
+          <div class="batch-actions">
+            <button class="btn btn-danger-quiet btn-sm" id="batchDelete">批量删除</button>
+            <button class="btn btn-quiet btn-sm" id="batchExport">批量导出</button>
+            <button class="btn btn-quiet btn-sm" id="batchClear">取消</button>
+          </div>
+        </div>
+
+        <div class="profile-list" id="profileList"></div>
+
+        <div class="side-footer">
+          <button class="tab-btn is-active" data-view="sources">源</button>
+          <button class="tab-btn" data-view="backups">
+            备份<span class="pill" id="backupBadge">0</span>
+          </button>
+          <button class="tab-btn" data-view="doctor">自检</button>
+        </div>
+      </aside>
+
+      <!-- ───────────── 主区域 ───────────── -->
+      <main class="main">
+        <section class="view" id="view-sources">
+          <div class="banner" id="errBanner" hidden></div>
+
+          <div class="empty-state" id="emptyState" hidden>
+            <div class="empty-icon">⇄</div>
+            <h2>还没有任何源</h2>
+            <p>源 = 一份完整的 models.json 快照。先把你当前的模型配置保存下来，之后就能一键来回切换。</p>
+            <div class="empty-actions">
+              <button class="btn btn-primary" id="emptySnapshot">保存当前配置为源</button>
+              <button class="btn btn-quiet" id="emptyNew">手工新建</button>
+            </div>
+          </div>
+
+          <div id="detail" hidden>
+            <header class="detail-head">
+              <div class="detail-title">
+                <h1 id="dName">—</h1>
+                <div class="badges" id="dBadges"></div>
+                <p class="detail-desc" id="dDesc"></p>
+              </div>
+              <div class="detail-actions">
+                <button class="btn btn-primary" id="btnSwitch">切换到此源</button>
+                <button class="btn btn-quiet" id="btnEdit">编辑</button>
+                <button class="btn btn-quiet" id="btnDiff">对比</button>
+                <button class="btn btn-quiet" id="btnExport">导出</button>
+                <button class="btn btn-danger-quiet" id="btnDelete">删除</button>
+              </div>
+            </header>
+
+            <div class="meta-row" id="dMeta"></div>
+
+            <div class="section-head">
+              <h2>模型 <span class="count" id="dModelCount">0</span></h2>
+            </div>
+            <div class="model-list" id="dModels"></div>
+          </div>
+        </section>
+
+        <section class="view" id="view-backups" hidden>
+          <header class="page-head">
+            <div>
+              <h1>备份</h1>
+              <p class="page-sub">每次切换、还原、删除源都会自动留一份快照</p>
+            </div>
+            <div class="detail-actions">
+              <button class="btn btn-quiet" id="btnOpenBackups">打开目录</button>
+              <button class="btn btn-quiet" id="btnRefreshBackups">刷新</button>
+            </div>
+          </header>
+          <div id="backupList" class="stack"></div>
+        </section>
+
+        <section class="view" id="view-doctor" hidden>
+          <header class="page-head">
+            <div>
+              <h1>环境自检</h1>
+              <p class="page-sub" id="doctorSub">检查配置目录、models.json、源完整性与备份状态</p>
+            </div>
+            <div class="detail-actions">
+              <button class="btn btn-quiet" id="btnOpenRoot">打开配置目录</button>
+              <button class="btn btn-primary" id="btnRerunDoctor">重新检测</button>
+            </div>
+          </header>
+          <div id="doctorList" class="stack"></div>
+        </section>
+
+        <footer class="statusbar">
+          <span id="statusPath" class="mono">—</span>
+          <span class="status-right">
+            <button class="proxy-btn" id="btnProtocol" title="协议转换代理">协议: 关</button>
+            <button class="proxy-btn" id="btnProxy" title="代理设置">代理: 自动</button>
+            <button class="proxy-btn" id="btnTheme" title="切换亮色/暗色">☀</button>
+            <span id="statusVersion" class="mono dim"></span>
+          </span>
+        </footer>
+      </main>
+    </div>
+
+    <div class="overlay" id="overlay" hidden>
+      <div class="modal" id="modal" role="dialog" aria-modal="true">
+        <header class="modal-head">
+          <h2 id="modalTitle">标题</h2>
+          <button class="icon-btn" id="modalClose" aria-label="关闭">✕</button>
+        </header>
+        <div class="modal-body" id="modalBody"></div>
+        <footer class="modal-foot" id="modalFoot"></footer>
+      </div>
+    </div>
+
+    <div class="toasts" id="toasts"></div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
