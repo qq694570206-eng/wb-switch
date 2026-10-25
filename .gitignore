@@ -41,3 +41,4 @@ models.json
 # 操作系统文件
 Desktop.ini
 $RECYCLEBIN/
+.workbuddy/
