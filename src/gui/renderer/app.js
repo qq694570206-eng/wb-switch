@@ -18,6 +18,7 @@
     busy: false,
     proxy: '',
     selected: new Set(), // 多选的源名
+    sidebarKeyword: '', // 侧栏源搜索关键词
   };
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -30,6 +31,28 @@
       '"': '&quot;',
       "'": '&#39;',
     })[c]);
+  }
+
+  /**
+   * 归一化匹配：去掉 `-` `_` `.` 空格并转小写后做子串判断，
+   * 这样 `glm5` 能命中 `glm-5.2`，`sensenova68` 能命中 `sensenova-6.8-flash-lite`。
+   * 关键词按空格分词，多个词需同时命中（AND）。
+   */
+  function norm(s) {
+    return String(s ?? '')
+      .toLowerCase()
+      .replace(/[-_.\s]+/g, '');
+  }
+
+  function fuzzyMatch(haystack, keyword) {
+    const kw = String(keyword ?? '').trim();
+    if (!kw) return true;
+    const hay = norm(haystack);
+    return kw
+      .split(/\s+/)
+      .filter(Boolean)
+      .map(norm)
+      .every((k) => hay.includes(k));
   }
 
   class ApiError extends Error {
@@ -217,7 +240,22 @@
       return;
     }
 
-    for (const p of o.profiles) {
+    // 侧栏搜索：按源名 + 网关模糊过滤
+    const kw = state.sidebarKeyword || '';
+    const shown = kw
+      ? o.profiles.filter((p) => fuzzyMatch(`${p.name} ${(p.hosts || []).join(' ')}`, kw))
+      : o.profiles;
+    $('#profileCount').textContent = kw
+      ? `${shown.length}/${o.profiles.length}`
+      : String(o.profiles.length);
+
+    if (!shown.length) {
+      list.innerHTML = `<div class="list-empty">没有匹配「${esc(kw)}」的源</div>`;
+      renderBatchBar();
+      return;
+    }
+
+    for (const p of shown) {
       const btn = document.createElement('button');
       const multi = state.selected.has(p.name);
       btn.className = `profile-item${state.detail?.name === p.name ? ' is-selected' : ''}${multi ? ' is-multi' : ''}`;
@@ -406,6 +444,14 @@
     } catch (err) {
       reportError(err);
     }
+    // 顺带同步自动备份开关（设置可能存在备份页之外被改）
+    try {
+      const s = await call(api.settings());
+      const toggle = $('#autoBackupToggle');
+      if (toggle) toggle.checked = !!s.autoBackup;
+    } catch {
+      /* 设置读取失败不影响备份列表 */
+    }
   }
 
   function renderBackups() {
@@ -413,11 +459,12 @@
     if (!state.backups.length) {
       box.innerHTML =
         '<div class="check-row"><div class="check-body"><div class="check-name">还没有备份</div>' +
-        '<div class="check-detail">第一次切换源时会自动创建。</div></div></div>';
+        '<div class="check-detail">点右上角「立即备份」保存一份当前配置；开启「切换时自动备份」后每次切换也会自动留档。</div></div></div>';
       return;
     }
     const kindLabel = {
       switch: '切换前',
+      manual: '手动备份',
       restore: '还原前',
       deleted: '已删除的源',
       other: '其它',
@@ -513,6 +560,17 @@
         message: `当前 models.json 不是任何一个源的副本，切换到「${name}」会用源的配置覆盖它。`,
         hint: '覆盖前会自动备份，可在「备份」页还原。',
         confirmLabel: '继续切换',
+      });
+      if (!go) return;
+    }
+
+    // 模型数量过多提醒：不硬拦，但要让人知道会写入多少
+    if (target.modelCount > 50) {
+      const go = await confirmDialog({
+        title: `这个源有 ${target.modelCount} 个模型`,
+        message: `切换会把 ${target.modelCount} 个模型全部写入 models.json，WorkBuddy 的模型列表会被这份清单整体替换。`,
+        hint: '如果只是想要少数几个模型，可以先在「编辑」里删掉不需要的，再切换。',
+        confirmLabel: '仍然切换',
       });
       if (!go) return;
     }
@@ -945,7 +1003,12 @@
    * 构建「获取模型 → 搜索 → 勾选（启用/禁用）→ 指定写入」的面板。
    * 只负责交互与展示，真正的网络请求走 IPC（主进程），URL 推导也在服务层完成。
    */
-  function buildFetchPanel() {
+  /**
+   * 构建拉取面板。
+   * @param options.onSelectionChange 勾选数变化回调（编辑源的「追加」栏用它实时显示已选数）
+   */
+  function buildFetchPanel(options = {}) {
+    const onSelectionChange = typeof options.onSelectionChange === 'function' ? options.onSelectionChange : null;
     const el = document.createElement('div');
     el.className = 'fetch-panel';
     // 左：连接信息（地址 / 密钥 / 供应商 / 能力默认值）；右：模型列表（搜索 + 勾选）
@@ -1022,12 +1085,12 @@
       countEl.textContent = keyword
         ? `已选 ${chosen.size} / ${all.length}（筛出 ${shown}）`
         : `已选 ${chosen.size} / ${all.length}`;
+      if (onSelectionChange) onSelectionChange(chosen.size, all.length);
     }
 
     function matches(m) {
       if (!keyword) return true;
-      const hay = `${m.id} ${m.owner || ''}`.toLowerCase();
-      return keyword.split(/\s+/).every((k) => hay.includes(k));
+      return fuzzyMatch(`${m.id} ${m.owner || ''}`, keyword);
     }
 
     function renderList() {
@@ -1182,6 +1245,8 @@
       isPristine: () => !touched && !all.length,
       fetchNow: doFetch,
       selectedIds: () => [...chosen],
+      /** 在左侧状态条上显示一条错误提示（自动带入失败时用，别让面板静默空着） */
+      error: (text) => setStatus('err', text),
       connection: () => ({
         url: urlEl.value.trim(),
         apiKey: keyEl.value.trim(),
@@ -1311,7 +1376,7 @@
 
         function matches(m) {
           if (!keyword) return true;
-          return (m.id + ' ' + (m.owner || '')).toLowerCase().includes(keyword);
+          return fuzzyMatch(m.id + ' ' + (m.owner || ''), keyword);
         }
 
         function renderList() {
@@ -1607,22 +1672,33 @@
     const editor = buildEditor(d.models);
     body.appendChild(editor.el);
 
-    // 「从网关追加模型」：复用新建源里的拉取面板，只取勾选的、且当前源里没有的
+    // 「从网关追加模型」：复用新建源里的拉取面板，只取勾选的、且当前源里没有的。
+    // 位置很关键：必须紧贴工具栏（模型列表上方）。之前挂在编辑器之后，
+    // 7 个模型的源就有 2500px 高，面板展开在可视区外，看着像点了没反应。
     let appendPanel = null;
     const appendHost = document.createElement('div');
     appendHost.className = 'append-host';
     appendHost.hidden = true;
-    body.appendChild(appendHost);
+    editor.el.before(appendHost);
+
+    /** 收起追加区，并把入口按钮恢复成未展开态 */
+    function collapseAppend() {
+      appendHost.hidden = true;
+      appendHost.innerHTML = '';
+      appendPanel = null;
+      const btn = body.querySelector('#epFetch');
+      if (btn) {
+        btn.textContent = '从网关追加模型';
+        btn.classList.remove('on');
+        // 收起后回到工具栏位置，让用户看到模型列表（新追加的就在里面）
+        requestAnimationFrame(() => btn.scrollIntoView({ block: 'nearest' }));
+      }
+    }
 
     body.querySelector('#epFetch').onclick = () => {
       const btn = body.querySelector('#epFetch');
       if (!appendHost.hidden) {
-        // 收起
-        appendHost.hidden = true;
-        appendPanel = null;
-        appendHost.innerHTML = '';
-        btn.textContent = '从网关追加模型';
-        btn.classList.remove('on');
+        collapseAppend();
         return;
       }
       btn.textContent = '收起';
@@ -1630,18 +1706,78 @@
       appendHost.hidden = false;
       appendHost.innerHTML = '';
 
-      const panel = buildFetchPanel();
+      // 动作栏：勾选计数 + 明确的「追加到源」按钮。
+      // 之前只能靠底部「保存」隐式并入，勾完看不出任何变化，像没反应。
+      const bar = document.createElement('div');
+      bar.className = 'append-bar';
+      bar.innerHTML = `
+        <span class="append-count" id="apCount">展开后会自动带入当前源的地址与密钥</span>
+        <span class="append-actions">
+          <button class="btn btn-quiet btn-sm" id="apClose" type="button">关闭</button>
+          <button class="btn btn-primary btn-sm" id="apDo" type="button">追加到源</button>
+        </span>`;
+      appendHost.appendChild(bar);
+
+      const countEl = bar.querySelector('#apCount');
+      const doBtn = bar.querySelector('#apDo');
+
+      const panel = buildFetchPanel({
+        onSelectionChange: (sel, total) => {
+          if (!total) {
+            countEl.textContent = '还没有获取到模型';
+            doBtn.disabled = true;
+            return;
+          }
+          doBtn.disabled = sel === 0;
+          countEl.textContent = `已勾选 ${sel} / ${total} 个模型`;
+        },
+      });
       appendPanel = panel;
       appendHost.appendChild(panel.el);
+      doBtn.disabled = true;
+
+      // 展开后立刻把面板滚进视野（弹窗内容可能很长，不滚等于没反应）
+      requestAnimationFrame(() => appendHost.scrollIntoView({ block: 'nearest' }));
+
+      bar.querySelector('#apClose').onclick = () => collapseAppend();
+      doBtn.onclick = () => {
+        void (async () => {
+          doBtn.disabled = true;
+          try {
+            const r = await appendSelected();
+            if (r.added) {
+              toast(
+                'ok',
+                `已追加 ${r.added} 个模型`,
+                r.skipped ? `${r.skipped} 个已存在，已跳过` : '记得点「保存」写入磁盘',
+              );
+            } else {
+              toast('info', '勾选的模型都已在源里', '没有需要追加的内容');
+            }
+          } catch (err) {
+            toast('err', err.message || String(err));
+          } finally {
+            if (appendPanel) doBtn.disabled = !appendPanel.selectedIds().length;
+          }
+        })();
+      };
+
       // 带入当前源的连接信息并自动拉取
       void (async () => {
         try {
           const s = await call(api.suggestConnection(d.name));
-          if (!s) return;
+          if (!s || (!s.url && !s.apiKey)) {
+            panel.error('没能自动带入地址与密钥，请在左侧手工填写后点「获取模型」');
+            return;
+          }
           panel.fill(s);
           await panel.fetchNow();
-        } catch {
-          /* 让用户手填 */
+        } catch (err) {
+          const msg = err instanceof ApiError ? err.message : String(err?.message || err);
+          panel.error(`自动带入失败：${msg}（可手工填写）`);
+        }
+        if (appendPanel === panel) {
+          requestAnimationFrame(() => appendHost.scrollIntoView({ block: 'nearest' }));
         }
       })();
     };
@@ -1669,12 +1805,7 @@
         }),
       );
       editor.append(models);
-      appendHost.hidden = true;
-      appendHost.innerHTML = '';
-      appendPanel = null;
-      const btn = body.querySelector('#epFetch');
-      btn.textContent = '从网关追加模型';
-      btn.classList.remove('on');
+      collapseAppend();
       return { added: fresh.length, skipped: ids.length - fresh.length };
     }
 
@@ -1735,9 +1866,232 @@
 
   // ───────────────────────── 视图切换 ─────────────────────────
 
+  // ───────────────────────── 导入与迁移 ─────────────────────────
+
+  /** 把 ImportResult 渲染成结果卡片 */
+  function renderImportResult(r, sourceLabel) {
+    const box = $('#importResult');
+    if (!box) return;
+    if (!r) {
+      box.innerHTML = '';
+      return;
+    }
+
+    if (r.total === 0) {
+      box.innerHTML = `<div class="check-row">
+        <div class="check-icon warn">!</div>
+        <div class="check-body">
+          <div class="check-name">没找到可导入的数据</div>
+          <div class="check-detail">${
+            sourceLabel === 'sources.json'
+              ? '旧版 sources.json 不存在，可能已经迁移过，或从来没用过旧版 CLI。'
+              : 'CC Switch 数据库里没有可用的 provider（或缺少 URL / Key）。'
+          }</div>
+        </div>
+      </div>`;
+      return;
+    }
+
+    const chips = [];
+    if (r.imported.length) chips.push(`<span class="badge ok">导入 ${r.imported.length}</span>`);
+    if (r.skipped.length) chips.push(`<span class="badge">跳过 ${r.skipped.length}</span>`);
+    if (r.failed.length) chips.push(`<span class="badge fail">失败 ${r.failed.length}</span>`);
+
+    const detail = [];
+    if (r.imported.length) {
+      detail.push(`<div class="imp-line"><span class="imp-k ok">导入</span>${r.imported.map(esc).join('、')}</div>`);
+    }
+    if (r.skipped.length) {
+      detail.push(
+        `<div class="imp-line"><span class="imp-k">跳过</span>${r.skipped.map(esc).join('、')}<em class="dim">（同名源已存在，如需覆盖请勾选「覆盖同名」）</em></div>`,
+      );
+    }
+    if (r.failed.length) {
+      detail.push(
+        `<div class="imp-line"><span class="imp-k fail">失败</span>${r.failed
+          .map((f) => `${esc(f.name)}（${esc(f.reason)}）`)
+          .join('、')}</div>`,
+      );
+    }
+
+    box.innerHTML = `<div class="row-card imp-result">
+      <div class="rc-main">
+        <div class="rc-title">上次导入：共 ${r.total} 个 ${chips.join(' ')}</div>
+        <div class="imp-detail">${detail.join('')}</div>
+        ${
+          r.imported.length
+            ? '<div class="imp-hint">导入的源只带外部工具里记录的模型；模型数看着偏少的话，打开该源「编辑 → 获取模型」补全后再切换。</div>'
+            : ''
+        }
+      </div>
+    </div>`;
+  }
+
+  /** 迁移旧 sources.json */
+  async function doMigrate() {
+    await guarded(async () => {
+      const r = await call(api.migrate(false));
+      renderImportResult(r, 'sources.json');
+      if (r.imported.length) {
+        toast('ok', `已导入 ${r.imported.length} 个源`);
+        await reload();
+      } else if (r.total === 0) {
+        toast('err', '没找到旧版 sources.json');
+      } else {
+        toast('ok', `没有新源（${r.skipped.length} 个已存在）`);
+      }
+    });
+  }
+
+  /** 打开 CC Switch 导入弹窗：先扫描，再勾选要导入的 provider */
+  async function openCcsImport() {
+    const sub = $('#ccsSub');
+    await guarded(async () => {
+      const data = await call(api.ccsList());
+      const providers = data?.providers || [];
+      if (sub) {
+        sub.textContent = providers.length
+          ? `找到 ${providers.length} 个 provider（${data.dbPath}）`
+          : 'CC Switch 数据库不存在，或里面没有可用的 provider';
+      }
+      if (!providers.length) {
+        toast('err', '没有可导入的 provider');
+        return;
+      }
+      paintCcsModal(providers);
+    });
+  }
+
+  const CCS_APP_LABEL = {
+    claude: 'Claude Code',
+    'claude-desktop': 'Claude Desktop',
+    codex: 'Codex',
+    gemini: 'Gemini',
+    opencode: 'OpenCode',
+  };
+
+  function paintCcsModal(providers) {
+    // 已存在的源，用来事先标记「同名」
+    const existing = new Set((state.overview.profiles || []).map((p) => p.name.toLowerCase()));
+
+    const groups = new Map();
+    for (const p of providers) {
+      if (!groups.has(p.appType)) groups.set(p.appType, []);
+      groups.get(p.appType).push(p);
+    }
+
+    const body = document.createElement('div');
+    body.innerHTML = `
+      <div class="ccs-toolbar">
+        <button class="btn btn-quiet btn-sm" id="ccsAll" type="button">全选</button>
+        <button class="btn btn-quiet btn-sm" id="ccsNone" type="button">全不选</button>
+        <label class="ccs-overwrite">
+          <input type="checkbox" id="ccsOverwrite" /> 覆盖同名源
+        </label>
+        <span class="picker-count" id="ccsCount">已选 0 / ${providers.length}</span>
+      </div>
+      <div class="ccs-groups">
+        ${[...groups.entries()]
+          .map(
+            ([appType, list]) => `
+          <div class="ccs-group">
+            <div class="ccs-group-head">
+              <label>
+                <input type="checkbox" data-group="${esc(appType)}" />
+                <strong>${esc(CCS_APP_LABEL[appType] || appType)}</strong>
+              </label>
+              <span class="dim">${list.length} 个</span>
+            </div>
+            ${list
+              .map(
+                (p) => `<label class="ccs-row${existing.has(p.name.toLowerCase()) ? ' is-dup' : ''}">
+                  <input type="checkbox" data-name="${esc(p.name)}" data-app="${esc(appType)}" />
+                  <span class="ccs-name">${esc(p.name)}</span>
+                  <span class="ccs-url" title="${esc(p.url)}">${esc(p.url)}</span>
+                  ${p.apiFormat ? `<span class="ccs-fmt">${esc(p.apiFormat)}</span>` : ''}
+                  ${existing.has(p.name.toLowerCase()) ? '<span class="tag-sync">已存在</span>' : ''}
+                </label>`,
+              )
+              .join('')}
+          </div>`,
+          )
+          .join('')}
+      </div>`;
+
+    const countEl = body.querySelector('#ccsCount');
+    const boxes = () => [...body.querySelectorAll('input[data-name]')];
+    const groupBoxes = () => [...body.querySelectorAll('input[data-group]')];
+
+    function refreshCount() {
+      const n = boxes().filter((b) => b.checked).length;
+      countEl.textContent = `已选 ${n} / ${providers.length}`;
+      // 组头三态
+      for (const g of groupBoxes()) {
+        const items = boxes().filter((b) => b.dataset.app === g.dataset.group);
+        const on = items.filter((b) => b.checked).length;
+        g.checked = on === items.length && on > 0;
+        g.indeterminate = on > 0 && on < items.length;
+      }
+    }
+
+    body.addEventListener('change', (e) => {
+      const t = e.target;
+      if (t.matches('input[data-group]')) {
+        const items = boxes().filter((b) => b.dataset.app === t.dataset.group);
+        items.forEach((b) => (b.checked = t.checked));
+      }
+      refreshCount();
+    });
+
+    body.querySelector('#ccsAll').onclick = () => {
+      boxes().forEach((b) => (b.checked = true));
+      refreshCount();
+    };
+    body.querySelector('#ccsNone').onclick = () => {
+      boxes().forEach((b) => (b.checked = false));
+      refreshCount();
+    };
+
+    openModal({
+      title: '从 CC Switch 导入',
+      body,
+      wide: true,
+      footer: [
+        { label: '取消', className: 'btn btn-quiet', onClick: closeModal },
+        {
+          label: '导入选中',
+          className: 'btn btn-primary',
+          id: 'ccsDo',
+          onClick: () => {
+            const names = boxes().filter((b) => b.checked).map((b) => b.dataset.name);
+            if (!names.length) {
+              toast('err', '先勾选要导入的源');
+              return;
+            }
+            const overwrite = body.querySelector('#ccsOverwrite').checked;
+            closeModal();
+            void guarded(async () => {
+              const r = await call(api.ccsImport(undefined, overwrite, names));
+              renderImportResult(r, 'CC Switch');
+              if (r.imported.length) {
+                toast('ok', `已导入 ${r.imported.length} 个源`);
+                await reload();
+              } else {
+                toast('ok', '没有导入任何源');
+              }
+            });
+          },
+        },
+      ],
+    });
+
+    refreshCount();
+  }
+
+  /** 切换主区域视图 */
   function setView(view) {
     state.view = view;
-    for (const v of ['sources', 'backups', 'doctor']) {
+    for (const v of ['sources', 'backups', 'doctor', 'import']) {
       $(`#view-${v}`).hidden = v !== view;
     }
     document.querySelectorAll('.tab-btn').forEach((b) => {
@@ -1755,6 +2109,28 @@
     $('#emptySnapshot').onclick = () => openNewModal('snapshot');
     $('#emptyNew').onclick = () => openNewModal('template');
 
+    // 侧栏源搜索
+    const sbSearch = $('#sidebarSearch');
+    if (sbSearch) {
+      sbSearch.addEventListener('input', () => {
+        state.sidebarKeyword = sbSearch.value.trim();
+        renderSidebar();
+      });
+      sbSearch.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          sbSearch.value = '';
+          state.sidebarKeyword = '';
+          renderSidebar();
+          sbSearch.blur();
+        } else if (e.key === 'Enter') {
+          // 回车：直接选中第一条匹配结果
+          const first = document.querySelector('.profile-item');
+          if (first) first.click();
+        }
+      });
+    }
+
     document.querySelectorAll('.tab-btn').forEach((b) => {
       b.onclick = () => setView(b.dataset.view);
     });
@@ -1771,10 +2147,37 @@
     $('#btnOpenBackups').onclick = () => {
       void call(api.reveal(state.overview.backupsPath)).catch(reportError);
     };
+    $('#btnBackupNow').onclick = () => {
+      void guarded(async () => {
+        const r = await call(api.backupNow());
+        toast('ok', '已备份当前配置', r.file);
+        await loadBackups();
+      });
+    };
+    $('#autoBackupToggle').onchange = (e) => {
+      const on = e.target.checked;
+      void (async () => {
+        try {
+          await call(api.saveSettings({ autoBackup: on }));
+          toast(
+            'ok',
+            on ? '已开启切换时自动备份' : '已改为手动备份',
+            on ? '每次切换前会归档到 backups/' : '切换不再留历史备份，失败仍会自动回滚',
+          );
+        } catch (err) {
+          e.target.checked = !on; // 保存失败就还原开关，别让界面说谎
+          reportError(err);
+        }
+      })();
+    };
     $('#btnRerunDoctor').onclick = () => void loadDoctor();
     $('#btnOpenRoot').onclick = () => {
       void call(api.reveal(state.overview.configRoot)).catch(reportError);
     };
+
+    // 导入与迁移
+    $('#btnMigrate').onclick = () => void doMigrate();
+    $('#btnCcsScan').onclick = () => void openCcsImport();
 
     $('#modalClose').onclick = closeModal;
     $('#overlay').addEventListener('mousedown', (e) => {

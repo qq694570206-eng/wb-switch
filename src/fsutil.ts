@@ -181,6 +181,16 @@ export function backupFile(file: string, backupDir: string, label = 'models'): s
   return target;
 }
 
+/** 尽力删除一个文件；失败不抛错（用于清理临时快照） */
+export function removeQuietly(file: string): boolean {
+  try {
+    fs.rmSync(file, { force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** 列出目录下的文件（不存在则返回空） */
 export function listFiles(dir: string, ext?: string): string[] {
   if (!isDir(dir)) return [];

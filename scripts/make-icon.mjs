@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 /**
- * 生成 wb-switch 的 ICO 图标（256×256，PNG 压缩，Vista+ 支持）。
+ * 生成 wb-switch 图标（512×512，PNG + ICO）。
  * 纯 Node 实现：手写像素缓冲 → PNG（zlib）→ ICO 容器。
  *
- * 图形：深色圆角方块 + 蓝白双向箭头（表示「切换」）。
+ * macOS 需要 ≥512×512 的图标用于 .icns 生成。
+ * Windows ICO 内嵌 256×256 PNG（Vista+ 支持），同时保留 512×512 PNG 源文件。
+ *
+ * 图形：深色圆角方块 + 藍白双向箭头（表示「切换」）。
  */
 
 import fs from 'node:fs';
@@ -11,7 +14,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
-const S = 256;
+const S = 512; // 画布尺寸（满足 macOS ≥512 要求）
 
 // ── 画布 ──
 const buf = Buffer.alloc(S * S * 4); // RGBA
@@ -64,29 +67,29 @@ const triangle = (p1, p2, p3, color, alpha = 255) => {
   }
 };
 
-// ── 绘制 ──
+// ── 绘制（坐标 = 原图 × 2）──
 const BG = [23, 32, 45]; // #17202D 深蓝灰
 const BG2 = [30, 42, 58]; // 轻微渐变提亮
 const TOP = [147, 197, 253]; // #93C5FD 浅蓝（上箭头）
 const BOT = [96, 165, 250]; // #60A5FA 蓝（下箭头）
 
 // 背景圆角方块
-roundRect(8, 8, S - 16, S - 16, 56, BG);
+roundRect(16, 16, S - 32, S - 32, 112, BG);
 // 顶部渐变条（简单叠加）
-for (let y = 8; y < 132; y++) {
-  const a = Math.round(((132 - y) / 124) * 26);
-  roundRect(8, y, S - 16, 1.2, 0, BG2, a);
+for (let y = 16; y < 264; y++) {
+  const a = Math.round(((264 - y) / 248) * 26);
+  roundRect(16, y, S - 32, 2.4, 0, BG2, a);
 }
 // 边框
-roundRect(8, 8, S - 16, S - 16, 56, [59, 130, 246], 70);
+roundRect(16, 16, S - 32, S - 32, 112, [59, 130, 246], 70);
 
 // 上箭头：右向（浅蓝）
-roundRect(56, 92, 108, 22, 11, TOP);
-triangle([164, 76], [164, 130], [204, 103], TOP);
+roundRect(112, 184, 216, 44, 22, TOP);
+triangle([328, 152], [328, 260], [408, 206], TOP);
 
 // 下箭头：左向（蓝）
-roundRect(92, 144, 108, 22, 11, BOT);
-triangle([92, 128], [92, 182], [52, 155], BOT);
+roundRect(184, 288, 216, 44, 22, BOT);
+triangle([184, 256], [184, 364], [104, 310], BOT);
 
 // ── PNG 编码 ──
 const crcTable = (() => {
@@ -114,28 +117,51 @@ const chunk = (type, data) => {
   return Buffer.concat([len, typeBuf, data, crcBuf]);
 };
 
-const ihdr = Buffer.alloc(13);
-ihdr.writeUInt32BE(S, 0);
-ihdr.writeUInt32BE(S, 4);
-ihdr[8] = 8; // bit depth
-ihdr[9] = 6; // color type RGBA
-ihdr[10] = 0;
-ihdr[11] = 0;
-ihdr[12] = 0;
+const encodePng = (size, srcBuf) => {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(size, 0);
+  ihdr.writeUInt32BE(size, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 6; // color type RGBA
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
 
-// 每行前置 filter byte 0
-const raw = Buffer.alloc((S * 4 + 1) * S);
-for (let y = 0; y < S; y++) {
-  raw[y * (S * 4 + 1)] = 0;
-  buf.copy(raw, y * (S * 4 + 1) + 1, y * S * 4, (y + 1) * S * 4);
+  // 每行前置 filter byte 0
+  const raw = Buffer.alloc((size * 4 + 1) * size);
+  for (let y = 0; y < size; y++) {
+    raw[y * (size * 4 + 1)] = 0;
+    srcBuf.copy(raw, y * (size * 4 + 1) + 1, y * size * 4, (y + 1) * size * 4);
+  }
+
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', zlib.deflateSync(raw, { level: 9 })),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+};
+
+// 512×512 PNG（供 macOS .icns 生成用）
+const png512 = encodePng(S, buf);
+
+// 256×256 PNG（嵌入 ICO，Windows Vista+ 用）
+// 通过最近邻降采样
+const S256 = 256;
+const buf256 = Buffer.alloc(S256 * S256 * 4);
+for (let y = 0; y < S256; y++) {
+  for (let x = 0; x < S256; x++) {
+    const sx = Math.floor(x * S / S256);
+    const sy = Math.floor(y * S / S256);
+    const si = (sy * S + sx) * 4;
+    const di = (y * S256 + x) * 4;
+    buf256[di] = buf[si];
+    buf256[di + 1] = buf[si + 1];
+    buf256[di + 2] = buf[si + 2];
+    buf256[di + 3] = buf[si + 3];
+  }
 }
-
-const png = Buffer.concat([
-  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-  chunk('IHDR', ihdr),
-  chunk('IDAT', zlib.deflateSync(raw, { level: 9 })),
-  chunk('IEND', Buffer.alloc(0)),
-]);
+const png256 = encodePng(S256, buf256);
 
 // ── ICO 容器（单张 256×256 PNG）──
 const header = Buffer.alloc(6);
@@ -150,13 +176,27 @@ entry[2] = 0; // palette
 entry[3] = 0; // reserved
 entry.writeUInt16LE(1, 4); // planes
 entry.writeUInt16LE(32, 6); // bpp
-entry.writeUInt32LE(png.length, 8);
+entry.writeUInt32LE(png256.length, 8);
 entry.writeUInt32LE(6 + 16, 12); // offset
 
-const ico = Buffer.concat([header, entry, png]);
+const ico = Buffer.concat([header, entry, png256]);
 
-const out =
-  process.argv[2] ?? path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'assets', 'icon.ico');
-fs.mkdirSync(path.dirname(out), { recursive: true });
-fs.writeFileSync(out, ico);
-console.log(`图标已生成：${out}（${(ico.length / 1024).toFixed(1)} KB）`);
+// ── 写出文件 ──
+const assetsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'assets');
+fs.mkdirSync(assetsDir, { recursive: true });
+
+// icon.png — 512×512，供 macOS 用
+const pngPath = path.join(assetsDir, 'icon.png');
+fs.writeFileSync(pngPath, png512);
+console.log(`PNG 已生成：${pngPath}（${(png512.length / 1024).toFixed(1)} KB，512×512）`);
+
+// icon.ico — 256×256，供 Windows 用
+const icoArg = process.argv[2];
+if (icoArg) {
+  fs.writeFileSync(icoArg, ico);
+  console.log(`ICO 已生成：${icoArg}（${(ico.length / 1024).toFixed(1)} KB，256×256）`);
+} else {
+  const icoPath = path.join(assetsDir, 'icon.ico');
+  fs.writeFileSync(icoPath, ico);
+  console.log(`ICO 已生成：${icoPath}（${(ico.length / 1024).toFixed(1)} KB，256×256）`);
+}

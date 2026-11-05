@@ -56,13 +56,22 @@ portable:
 # ── macOS ──
 # icns 图标：Windows 上无法生成 icns，electron-builder 会用 PNG 自动生成
 # 不签名不公证，用户需要右键「打开」绕过 Gatekeeper
+#
+# 只出 arm64：electronDist 指向 node_modules/electron/dist，里面只有本机架构的运行时。
+# 如果这里写 x64 + arm64，两次构建会复用同一个运行时，且 artifactName 不含架构，
+# 后一次直接覆盖前一次 —— 出来的「x64」DMG 里其实是 arm64 二进制，Intel 机器打不开。
+#
+# 要出 Intel 版：先下 x64 运行时再构建
+#   ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ \
+#   node node_modules/electron/install.js   # arch 由 npm_config_arch 决定
+#   npm_config_arch=x64 npm rebuild electron
+# 或改用 --universal（需同时具备两个运行时，会合并成一份通用包）。
 mac:
   icon: assets/icon.png
   category: public.app-category.developer-tools
   target:
     - target: dmg
       arch:
-        - x64
         - arm64
 
 dmg:

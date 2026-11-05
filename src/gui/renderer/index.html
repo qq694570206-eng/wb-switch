@@ -46,6 +46,16 @@
           <span class="list-count" id="profileCount">0</span>
         </div>
 
+        <div class="side-search">
+          <input
+            class="input input-sm"
+            id="sidebarSearch"
+            placeholder="搜索源名 / 网关（Ctrl+F）"
+            spellcheck="false"
+            autocomplete="off"
+          />
+        </div>
+
         <div class="batch-bar" id="batchBar" hidden>
           <span id="batchCount">已选 0 个源</span>
           <div class="batch-actions">
@@ -63,6 +73,7 @@
             备份<span class="pill" id="backupBadge">0</span>
           </button>
           <button class="tab-btn" data-view="doctor">自检</button>
+          <button class="tab-btn" data-view="import">导入</button>
         </div>
       </aside>
 
@@ -110,13 +121,21 @@
           <header class="page-head">
             <div>
               <h1>备份</h1>
-              <p class="page-sub">每次切换、还原、删除源都会自动留一份快照</p>
+              <p class="page-sub">切换默认不再自动备份，需要留档时点「立即备份」</p>
             </div>
             <div class="detail-actions">
               <button class="btn btn-quiet" id="btnOpenBackups">打开目录</button>
               <button class="btn btn-quiet" id="btnRefreshBackups">刷新</button>
+              <button class="btn btn-primary" id="btnBackupNow">立即备份</button>
             </div>
           </header>
+          <label class="check-row auto-backup-row">
+            <input type="checkbox" id="autoBackupToggle" />
+            <div class="check-body">
+              <div class="check-name">切换时自动备份</div>
+              <div class="check-detail">开启后每次切换前会把当前 models.json 归档到 backups/。关闭时切换仍可失败自动回滚，只是不留历史。</div>
+            </div>
+          </label>
           <div id="backupList" class="stack"></div>
         </section>
 
@@ -132,6 +151,37 @@
             </div>
           </header>
           <div id="doctorList" class="stack"></div>
+        </section>
+
+        <section class="view" id="view-import" hidden>
+          <header class="page-head">
+            <div>
+              <h1>导入与迁移</h1>
+              <p class="page-sub">把别处的模型源批量接进来，省掉一个个手填 URL 和 Key</p>
+            </div>
+          </header>
+
+          <div class="stack">
+            <div class="row-card">
+              <div class="rc-main">
+                <div class="rc-title">迁移旧版 sources.json</div>
+                <div class="rc-sub" id="migrateSub">
+                  旧版 wbs 用的是单文件 sources.json，这里可以一次性拆成多个源
+                </div>
+              </div>
+              <button class="btn btn-quiet btn-sm" id="btnMigrate">开始迁移</button>
+            </div>
+
+            <div class="row-card">
+              <div class="rc-main">
+                <div class="rc-title">从 CC Switch 导入</div>
+                <div class="rc-sub" id="ccsSub">读取 CC Switch 的 provider 列表，按 Claude / Codex / Gemini 等分类导入</div>
+              </div>
+              <button class="btn btn-quiet btn-sm" id="btnCcsScan">扫描</button>
+            </div>
+          </div>
+
+          <div id="importResult"></div>
         </section>
 
         <footer class="statusbar">

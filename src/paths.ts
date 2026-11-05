@@ -60,6 +60,21 @@ export function stateFile(root = resolveConfigRoot()): string {
   return path.join(dataDir(root), 'state.json');
 }
 
+/** 用户偏好设置 */
+export function settingsFile(root = resolveConfigRoot()): string {
+  return path.join(dataDir(root), 'settings.json');
+}
+
+/**
+ * 回滚快照目录。
+ *
+ * 与 backups/ 区别：这里只放「写入失败时用来还原」的临时副本，切换成功即删除，
+ * 不参与 backups / restore 的历史列表。用户关掉自动备份后，切换失败仍能自动回滚。
+ */
+export function rollbackDir(root = resolveConfigRoot()): string {
+  return path.join(dataDir(root), '.rollback');
+}
+
 /** 把任意字符串安全化为合法的 Windows 文件名 */
 export function safeFileName(name: string): string {
   const cleaned = name

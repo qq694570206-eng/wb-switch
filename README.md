@@ -10,12 +10,14 @@ WorkBuddy 的**模型源切换器**：把不同的模型网关配置存成一个
 
 wb-switch 把这些配置存成独立的「源」快照，切换时：
 
-1. 先备份当前 `models.json`
+1. 对当前 `models.json` 拍一份临时快照（成功后立即删除；不默认进备份历史）
 2. 原子写入目标源的配置
-3. 回读校验，不一致自动用备份回滚
+3. 回读校验，不一致自动用快照回滚
 4. 更新「当前源」指针
 
 任何一步失败都不会留下半截配置。
+
+**备份默认是手动的**：切换不再自动往 `backups/` 归档。需要留档时点备份页的「立即备份」、跑 `wb-switch backup`，或临时加 `--backup`。想恢复旧行为就开 `wb-switch config autoBackup=on`（界面备份页也有开关）。
 
 ## 安装
 
@@ -65,7 +67,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall
 
 ### 主界面
 
-- **左侧栏**：全部源列表，`●` 绿点是当前源；带「同步」标记表示该源内容与磁盘 `models.json` 完全一致
+- **左侧栏**：全部源列表，`●` 绿点是当前源；带「同步」标记表示该源内容与磁盘 `models.json` 完全一致。源多了用列表上方的搜索框过滤（按源名 + 网关，`Ctrl+F` 聚焦；`glm5` 能命中 `glm-5.2` 这类去掉 `-` `_` `.` 也能对上的写法）
 - **当前源卡片**：显示当前源的模型数和网关主机
 - **右侧详情**：每个模型一张卡片，含接口地址、API Key（默认脱敏，点眼睛图标显示、点复制图标复制）、能力标签（工具调用 / 图像 / 推理 / 自定义协议）
 - **顶部按钮**：切换到此源、编辑、导出、删除
@@ -97,9 +99,24 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall
 
 改名、改描述、增删模型、改地址和 Key。**如果编辑的是当前源，保存时会同步写入 `models.json`**（写入前自动备份）。
 
+### 导入与迁移
+
+侧栏底部「**导入**」页，把别处的源一次性接进来：
+
+| 入口 | 说明 |
+| --- | --- |
+| **迁移旧版 sources.json** | 旧版 `wbs`（Python）把源存在单个 `~/.workbuddy/wb-switch/sources.json` 里。点一下拆成多个 `profiles/*.json`，同名源默认跳过，不会覆盖手改过的内容 |
+| **从 CC Switch 导入** | 读 `~/.cc-switch/cc-switch.db` 的 provider 表，按 Claude Code / Claude Desktop / Codex / Gemini / OpenCode 分组，可全选某一组、逐个勾选、勾「覆盖同名」；已存在的源会标「已存在」 |
+
+导入完会显示结果卡片：导入 N 个 / 跳过 N 个（同名）/ 失败 N 个及原因。
+
+> 导入的源只带外部工具里记录的模型清单。CC Switch 大多没存模型列表，导入后模型数会偏少 —— 打开该源「编辑 → 从网关追加模型」补全后再切换。
+
 ### 备份
 
-每次切换、还原、删除源都会自动留一份快照。备份页可以按时间查看并一键还原；还原前还会再备份一次当前配置，所以可以反悔。
+**切换默认不再自动备份**，避免 `backups/` 越堆越多。备份页右上角「立即备份」随时手动存一份，列表里按时间查看、一键还原；还原前还会再备份一次当前配置，所以可以反悔。
+
+想让每次切换都自动留档，勾上备份页的「切换时自动备份」（或 `wb-switch config autoBackup=on`）。关闭时切换仍会在写入失败时用临时快照自动回滚，只是不留历史记录。
 
 ### 自检
 
@@ -182,10 +199,18 @@ wb-switch init work            # 把当前 models.json 存为源
 wb-switch list                 # 源列表，● 标当前
 wb-switch use backup           # 切换
 wb-switch diff backup          # 与磁盘对比
+wb-switch backup               # 手动备份当前配置
 wb-switch backups              # 备份列表
 wb-switch restore 1            # 按序号还原
+wb-switch use work --backup    # 本次切换顺带归档一份
+wb-switch config               # 查看设置（autoBackup 等）
 wb-switch doctor               # 环境自检
+wb-switch migrate              # 把旧 sources.json 拆成多个源
+wb-switch ccs                  # 只读列出 CC Switch 里的 provider
+wb-switch import-ccswitch --app claude   # 从 CC Switch 导入（可按 app_type 筛）
 ```
+
+`migrate` / `import-ccswitch` 默认跳过同名源，加 `--overwrite` 才覆盖；加 `--dry-run` 只列出不写入。
 
 退出码：`0` 成功 / `2` 用法 / `3` 配置 / `4` 源 / `5` 环境。
 
@@ -235,19 +260,21 @@ src/
 │   ├── service.ts       # 业务服务层（不依赖 Electron，可单独测试）
 │   ├── modelFetch.ts    # 拉取网关模型列表：端点推导、多格式解析、错误翻译
 │   └── renderer/        # 界面：index.html / styles.css / app.js（无框架）
-├── switcher.ts          # 切换核心：备份 → 原子写 → 回读校验 → 回滚
+├── switcher.ts          # 切换核心：快照 → 原子写 → 回读校验 → 回滚
+├── settings.ts          # 用户偏好（autoBackup 等）
 ├── profiles.ts          # 源存储、前缀解析、删除保留副本
+├── migrate.ts           # 外部数据导入：旧 sources.json 迁移 + CC Switch SQLite 读取
 ├── config.ts            # models.json 解析校验、缩进/换行保真
 ├── fsutil.ts            # 原子写（Windows rename 重试）、备份、格式探测
 ├── state.ts / paths.ts / errors.ts / types.ts
 └── cli.ts               # 命令行
 assets/
-└── icon.ico             # 应用图标（构建输入，长期保留）
+└── icon.png / icon.ico  # 应用图标（512² PNG + 多尺寸 ICO，构建输入）
 scripts/
 ├── build-gui.mjs        # esbuild 打主进程/预加载 → build/app
 ├── build-portable.mjs   # 调 electron-builder → 合并到 dist-app → 清临时目录
 ├── build-exe.mjs        # SEA 打包命令行版（按需）
-├── make-icon.mjs        # 纯 Node 生成 ICO
+├── make-icon.mjs        # 纯 Node 生成 PNG(512²) + ICO（无外部依赖）
 ├── apply-resources.mjs  # 写图标与版本信息
 └── clean.mjs            # 清理构建产物
 tests/
@@ -264,7 +291,7 @@ tests/
 | SmartScreen / 杀软拦截 | 见「安装」小节的说明，选「仍要运行」或加白名单 |
 | 界面全白 | 按 `F5` 重新加载；仍不行就开一次「自检」页，或 `npm run start -- doctor` 排查 |
 | 提示「配置目录不存在」 | WorkBuddy 至少启动过一次才会生成 `%USERPROFILE%\.workbuddy` |
-| 备份太多 | 备份是纯文本，单份约 1 KB，可手动清理 `wb-switch\backups\` |
+| 备份太多 | 已经默认手动备份了；历史遗留的旧备份可直接删 `wb-switch/backups/` |
 | 源被删了想找回 | 备份页里有 `deleted-*.json`，还原即可 |
 
 ## 许可

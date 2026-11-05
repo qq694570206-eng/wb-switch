@@ -3,12 +3,16 @@
  *
  * 一次切换的完整步骤（与 ccswitch 的 global switch 思路一致）：
  *   1. 校验目标源存在且结构合法
- *   2. 备份当前 models.json（时间戳命名，失败则中止）
+ *   2. 保存当前 models.json 的快照（归档备份 or 临时回滚快照）
  *   3. 原子写入目标源的模型列表
  *   4. 回读校验写入结果
  *   5. 更新 state.json 的 active 指针
  *
- * 任何一步失败都会保留备份，不会留下半截配置。
+ * 备份分两种，别混淆：
+ *   · 归档备份：落到 backups/，能在 `backups` / `restore` 里看到。**默认不自动做**，
+ *     由 settings.autoBackup 控制，或命令行 `--backup` 单次触发。
+ *   · 回滚快照：落到 .rollback/，只在写入失败时救场，成功后立刻删掉，不进历史列表。
+ *     这一层无论如何都会做——否则切换失败会留下半截配置。
  */
 
 import path from 'node:path';
@@ -20,20 +24,25 @@ import {
   exists,
   isDir,
   readJson,
+  removeQuietly,
   writeFileAtomic,
   detectFormat,
   stringifyJson,
 } from './fsutil.js';
-import { backupsDir, dataDir, modelsFile, resolveConfigRoot } from './paths.js';
+import { backupsDir, dataDir, modelsFile, resolveConfigRoot, rollbackDir } from './paths.js';
 import { loadModels, modelsEqual, saveModels, validateModels } from './config.js';
 import { findMatchingProfile, loadProfile, resolveProfileName, listProfileNames } from './profiles.js';
+import { readSettings } from './settings.js';
 import { readState, setActive } from './state.js';
 
 export interface SwitchOptions {
   /** 只演算不写入 */
   dryRun?: boolean;
-  /** 跳过备份（不推荐） */
-  noBackup?: boolean;
+  /**
+   * 本次是否归档备份到 backups/。
+   * 不传则读 settings.autoBackup（默认 false）。`--no-backup` 传 false，`--backup` 传 true。
+   */
+  backup?: boolean;
   /** 内容已一致时仍然重写文件 */
   force?: boolean;
   /** 自定义配置根目录 */
@@ -124,11 +133,16 @@ export function switchTo(nameOrQuery: string, options: SwitchOptions = {}): Swit
     };
   }
 
-  // 备份当前配置
+  // 归档备份（可选，进 backups/ 历史）/ 回滚快照（总是，成功后删除）
+  const wantArchive = options.backup ?? readSettings(root).autoBackup;
   let backup: string | null = null;
-  if (!options.noBackup) {
+  let rollback: string | null = null;
+  if (wantArchive) {
     backup = backupFile(target, backupsDir(root), `models-${safeLabel(realName)}`);
+  } else {
+    rollback = backupFile(target, rollbackDir(root), `rollback-${safeLabel(realName)}`);
   }
+  const rescue = backup ?? rollback;
 
   // 写入目标配置
   try {
@@ -139,13 +153,10 @@ export function switchTo(nameOrQuery: string, options: SwitchOptions = {}): Swit
       saveModels(target, profile.models);
     }
   } catch (err) {
-    if (backup) {
-      throw new ConfigError(
-        `写入失败，已保留备份：${backup}\n原因：${(err as Error).message}`,
-        `可执行 wb-switch restore "${backup}" 还原。`,
-      );
-    }
-    throw err;
+    throw new ConfigError(
+      `写入失败，已保留快照：${rescue ?? '(无)'}\n原因：${(err as Error).message}`,
+      rescue ? `可执行 wb-switch restore "${rescue}" 还原。` : undefined,
+    );
   }
 
   // 回读校验，确保落盘内容正确
@@ -153,22 +164,26 @@ export function switchTo(nameOrQuery: string, options: SwitchOptions = {}): Swit
   try {
     written = loadModels(target);
   } catch (err) {
-    if (backup) restoreFromBackup(root, backup);
+    if (rescue) restoreFromBackup(root, rescue, false);
     throw new ConfigError(
-      `写入后校验失败，已${backup ? '自动还原备份' : '中止'}：${(err as Error).message}`,
-      backup ? `备份位置：${backup}` : undefined,
+      `写入后校验失败，已${rescue ? '自动还原' : '中止'}：${(err as Error).message}`,
+      rescue ? `还原自：${rescue}` : undefined,
     );
   }
 
   if (written === null || !modelsEqual(written, profile.models)) {
-    if (backup) restoreFromBackup(root, backup);
+    if (rescue) restoreFromBackup(root, rescue, false);
     throw new ConfigError(
-      `写入后内容与源不一致，已${backup ? '自动还原备份' : '中止'}。`,
+      `写入后内容与源不一致，已${rescue ? '自动还原' : '中止'}。`,
       '可能是磁盘写入异常或文件被其它程序占用，请重试。',
     );
   }
 
-  const state = setActive(root, realName, backup ? path.basename(backup) : null);
+  // 写入确认无误，临时回滚快照用完即弃（归档备份则保留）
+  if (rollback) removeQuietly(rollback);
+
+  // 没有归档备份时保留原有 lastBackup 指针，不要清空
+  const state = setActive(root, realName, backup ? path.basename(backup) : undefined);
 
   return {
     profile,
@@ -185,8 +200,17 @@ function safeLabel(name: string): string {
   return name.replace(/[^\w\u4e00-\u9fa5.-]+/g, '_').slice(0, 32);
 }
 
-/** 从备份文件还原 models.json；若内容命中某个源，则回填当前源指针 */
-export function restoreFromBackup(root: string, backupPath: string): { active: string | null } {
+/**
+ * 从备份文件还原 models.json；若内容命中某个源，则回填当前源指针。
+ *
+ * @param recordBackup 是否把该文件记为 state.lastBackup。
+ *   自动回滚用的临时快照传 false——它随后会被删除，记进去就成了悬空引用。
+ */
+export function restoreFromBackup(
+  root: string,
+  backupPath: string,
+  recordBackup = true,
+): { active: string | null } {
   if (!exists(backupPath)) {
     throw new ConfigError(`备份文件不存在：${backupPath}`);
   }
@@ -194,7 +218,8 @@ export function restoreFromBackup(root: string, backupPath: string): { active: s
   const models = validateModels(data, path.basename(backupPath));
   saveModels(modelsFile(root), models);
   const matched = findMatchingProfile(root, models);
-  setActive(root, matched, path.basename(backupPath));
+  // 传 undefined 表示「保持原有 lastBackup」，避免回滚把指针清成 null
+  setActive(root, matched, recordBackup ? path.basename(backupPath) : undefined);
   return { active: matched };
 }
 

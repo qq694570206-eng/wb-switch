@@ -28,7 +28,14 @@ import {
   saveProfile,
   validateProfileName,
 } from '../profiles.js';
+import { readSettings, writeSettings } from '../settings.js';
 import { readState, setActive } from '../state.js';
+import {
+  migrateFromSourcesJson,
+  readCcSwitchProviders,
+  importFromCcSwitch,
+  ccSwitchDbPath,
+} from '../migrate.js';
 import {
   prepareRoot,
   readCurrentModels,
@@ -88,7 +95,7 @@ export interface BackupView {
   size: number;
   mtime: string;
   /** 从文件名猜测用途 */
-  kind: 'switch' | 'restore' | 'deleted' | 'other';
+  kind: 'switch' | 'manual' | 'restore' | 'deleted' | 'other';
 }
 
 export interface DoctorCheck {
@@ -179,6 +186,7 @@ function backupKind(file: string): BackupView['kind'] {
   if (file.startsWith('deleted-')) return 'deleted';
   if (file.includes('before-restore')) return 'restore';
   if (file.startsWith('models-')) return 'switch';
+  if (file.startsWith('manual-')) return 'manual';
   return 'other';
 }
 
@@ -546,6 +554,28 @@ export function importProfile(file: string, name: string): { name: string; model
   return { name: realName, modelCount: models.length };
 }
 
+/** 手动备份当前 models.json（切换已不再自动备份） */
+export function backupNow(): { file: string; size: number } {
+  const root = getRoot();
+  const src = modelsFile(root);
+  if (!exists(src)) throw new Error('当前没有 models.json 可备份');
+  const target = backupFile(src, backupsDir(root), 'manual');
+  if (!target) throw new Error('备份失败：源文件不存在');
+  const st = fs.statSync(target);
+  return { file: path.basename(target), size: st.size };
+}
+
+/** 读取设置 */
+export function getSettings(): { autoBackup: boolean } {
+  return readSettings(getRoot());
+}
+
+/** 修改设置 */
+export function saveSettings(patch: { autoBackup?: boolean }): { autoBackup: boolean } {
+  const next = writeSettings(getRoot(), patch);
+  return { autoBackup: next.autoBackup };
+}
+
 export function restoreBackup(fileName: string): { active: string | null; safety: string | null } {
   const root = getRoot();
   prepareRoot(root);
@@ -746,6 +776,24 @@ export function getProxyStatus(): { running: boolean; port: number; models: stri
     port: proxyState.port,
     models: [...proxyState.models.keys()],
   };
+}
+
+// ── 迁移与外部导入 ──
+
+/** 把旧 wbs 的扁平 sources.json 迁移为 profiles/*.json */
+export function migrateLegacy(overwrite = false) {
+  return migrateFromSourcesJson(undefined, overwrite);
+}
+
+/** 列出 CC Switch 里的 provider（只读） */
+export function listCcSwitch(appTypes?: string[]) {
+  const providers = readCcSwitchProviders(appTypes);
+  return { dbPath: ccSwitchDbPath(), providers };
+}
+
+/** 从 CC Switch 批量导入为 profiles */
+export function importCcSwitch(appTypes?: string[], overwrite = false, onlyNames?: string[]) {
+  return importFromCcSwitch(appTypes, overwrite, onlyNames);
 }
 
 /**

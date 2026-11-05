@@ -140,11 +140,29 @@ async function main() {
   const afterSwitch = JSON.parse(fs.readFileSync(path.join(dirA, 'models.json'), 'utf8'));
   assert(afterSwitch.length === 1 && afterSwitch[0].id === 'gpt-4o', 'models.json 已替换为目标源内容');
 
+  // 默认不自动备份：目录要么没建，要么是空的（回滚快照在 .rollback 且用完即删）
   const backupDir = path.join(dirA, 'wb-switch', 'backups');
-  const backups = fs.readdirSync(backupDir);
-  assert(backups.some((f) => f.startsWith('models-')), '切换前生成备份');
-  const backupContent = JSON.parse(fs.readFileSync(path.join(backupDir, backups[0]), 'utf8'));
-  assert(backupContent.length === 2, '备份内容是切换前的配置');
+  const backupsAfterSwitch = fs.existsSync(backupDir) ? fs.readdirSync(backupDir) : [];
+  assert(backupsAfterSwitch.length === 0, '默认切换不自动生成备份');
+  const rollbackDir = path.join(dirA, 'wb-switch', '.rollback');
+  const rollbackLeft = fs.existsSync(rollbackDir) ? fs.readdirSync(rollbackDir) : [];
+  assert(rollbackLeft.length === 0, '切换成功后临时回滚快照已清理');
+
+  // 手动备份
+  r = await run(['backup'], { env: envA });
+  assert(r.code === 0, 'backup 手动备份成功', r.stderr);
+  const manualBackups = fs.readdirSync(backupDir).filter((f) => f.startsWith('manual-'));
+  assert(manualBackups.length === 1, '手动备份命名为 manual-*');
+  const manualContent = JSON.parse(fs.readFileSync(path.join(backupDir, manualBackups[0]), 'utf8'));
+  assert(manualContent.length === 1 && manualContent[0].id === 'gpt-4o', '手动备份内容是当前配置');
+
+  // autoBackup 开关
+  r = await run(['config', '--json'], { env: envA });
+  assert(JSON.parse(r.stdout).autoBackup === false, 'config 默认 autoBackup=off');
+  r = await run(['config', 'autoBackup=on'], { env: envA });
+  assert(r.code === 0 && r.stdout.includes('on'), 'config 可开启 autoBackup', r.stderr);
+  r = await run(['config', 'autoBackup=off'], { env: envA });
+  assert(r.code === 0 && r.stdout.includes('off'), 'config 可关闭 autoBackup', r.stderr);
 
   r = await run(['current'], { env: envA });
   assert(r.stdout.includes('backup'), 'current 显示当前源');
@@ -188,7 +206,8 @@ async function main() {
     path.join(dirB, 'wb-switch', 'profiles', 'b.json'),
     JSON.stringify({ name: 'b', models: MODELS_A }, null, 2),
   );
-  r = await run(['use', 'b'], { env: envB });
+  // --backup 显式要求归档，后面的 restore 依赖这份备份
+  r = await run(['use', 'b', '--backup'], { env: envB });
   const styled = fs.readFileSync(path.join(dirB, 'models.json'), 'utf8');
   assert(r.code === 0, '切换成功（4空格/CRLF 场景）', r.stderr);
   assert(styled.includes('\r\n'), '保留 CRLF 换行');

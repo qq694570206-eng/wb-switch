@@ -25,6 +25,9 @@ import {
   getRoot,
   importProfile,
   listBackups,
+  backupNow,
+  getSettings,
+  saveSettings,
   listTemplates,
   removeProfile,
   renameProfileTo,
@@ -37,6 +40,9 @@ import {
   getProxiedModelsJson,
   suggestConnection,
   switchProfile,
+  migrateLegacy,
+  listCcSwitch,
+  importCcSwitch,
   type ComposeModelsInput,
   type ConnectionSuggestion,
   type DoctorReport,
@@ -154,8 +160,24 @@ function createWindow(): void {
     });
   }
 
-  // 关闭窗口时最小化到托盘而不是退出（除非托盘已被销毁或用户从托盘点退出）
+  // 开发辅助：WB_GUI_QUIT_MS=<毫秒> 时到点触发一次 app.quit()（等同托盘菜单「退出」），
+  // 用于验证「退出后进程真的没了」而不是被 close 拦截悄悄取消。
+  const quitMs = Number(process.env.WB_GUI_QUIT_MS || 0);
+  if (quitMs > 0) {
+    mainWindow.webContents.once('did-finish-load', () => {
+      setTimeout(() => {
+        // eslint-disable-next-line no-console
+        console.log(`[test] app.quit() @${quitMs}ms`);
+        app.quit();
+      }, quitMs);
+    });
+  }
+
+  // 关闭窗口时最小化到托盘而不是退出。
+  // 但如果正在退出（Cmd+Q / 菜单退出 / 托盘退出），必须放行——
+  // app.quit() 会先关窗口，这里若再 preventDefault 就会把退出整个取消掉。
   mainWindow.on('close', (e) => {
+    if (isQuitting) return;
     if (!tray || tray.isDestroyed()) return;
     e.preventDefault();
     mainWindow?.hide();
@@ -174,19 +196,26 @@ function createWindow(): void {
 
 function buildMenu(): void {
   // 保留最小菜单：编辑类快捷键（复制/粘贴/全选）依赖菜单角色才能在 Windows 上稳定生效
-  const template: Electron.MenuItemConstructorOptions[] = [
-    {
-      label: '文件',
-      submenu: [
-        {
-          label: '重新加载界面',
-          accelerator: 'F5',
-          click: () => mainWindow?.reload(),
-        },
-        { type: 'separator' },
-        { label: '退出', role: 'quit' },
-      ],
-    },
+  const template: Electron.MenuItemConstructorOptions[] = [];
+
+  // macOS 必须有应用菜单，否则「关于 / 隐藏 / 退出」和 Cmd+Q 全都没有着落
+  if (process.platform === 'darwin') {
+    template.push({ role: 'appMenu' });
+  }
+
+  template.push({
+    label: '文件',
+    submenu: [
+      {
+        label: '重新加载界面',
+        accelerator: 'F5',
+        click: () => mainWindow?.reload(),
+      },
+      { type: 'separator' },
+      { label: '退出', role: 'quit' },
+    ],
+  });
+  template.push(
     {
       label: '编辑',
       submenu: [
@@ -209,7 +238,7 @@ function buildMenu(): void {
         { role: 'toggleDevTools', label: '开发者工具' },
       ],
     },
-  ];
+  );
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
@@ -217,14 +246,33 @@ function buildMenu(): void {
 
 let tray: Tray | null = null;
 
+/**
+ * 托盘图标。
+ * macOS / Linux 只认 PNG（nativeImage 在 macOS 上不解析 ICO），
+ * Windows 优先 ICO。macOS 菜单栏是 22pt，用 16px 更清爽。
+ */
+function loadTrayIcon(): Electron.NativeImage {
+  const order = process.platform === 'win32' ? ['icon.ico', 'icon.png'] : ['icon.png', 'icon.ico'];
+  for (const name of order) {
+    try {
+      const img = nativeImage.createFromPath(path.join(__dirname, name));
+      if (!img.isEmpty()) {
+        return process.platform === 'darwin' ? img.resize({ width: 16, height: 16 }) : img;
+      }
+    } catch {
+      /* 继续试下一个 */
+    }
+  }
+  return nativeImage.createEmpty();
+}
+
 function buildTray(): void {
-  const iconPath = path.join(__dirname, 'icon.ico');
-  let icon: Electron.NativeImage;
-  try {
-    icon = nativeImage.createFromPath(iconPath);
-    if (icon.isEmpty()) icon = nativeImage.createEmpty();
-  } catch {
-    icon = nativeImage.createEmpty();
+  const icon = loadTrayIcon();
+  // 图标加载不出来就别建托盘：否则关窗口会藏进一个看不见的托盘，用户以为程序退不掉
+  if (icon.isEmpty()) {
+    // eslint-disable-next-line no-console
+    console.warn('托盘图标加载失败，跳过系统托盘（关窗口即退出）');
+    return;
   }
   tray = new Tray(icon);
   tray.setToolTip('wb-switch · WorkBuddy 模型源切换');
@@ -325,6 +373,14 @@ function registerIpc(): void {
   );
 
   ipcMain.handle('wb:backups', () => handle(() => listBackups()));
+
+  ipcMain.handle('wb:backupNow', () => handle(() => backupNow()));
+
+  ipcMain.handle('wb:settings', () => handle(() => getSettings()));
+
+  ipcMain.handle('wb:saveSettings', (_e, patch: { autoBackup?: boolean }) =>
+    handle(() => saveSettings(patch)),
+  );
 
   ipcMain.handle('wb:restore', (_e, file: string) => handle(() => restoreBackup(file)));
 
@@ -444,9 +500,27 @@ function registerIpc(): void {
     clipboard.writeText(String(text ?? ''));
     return { ok: true, data: true };
   });
+
+  // 迁移旧 sources.json
+  ipcMain.handle('wb:migrate', (_e, overwrite?: boolean) =>
+    handle(() => migrateLegacy(overwrite === true)),
+  );
+
+  // CC Switch：列出 provider
+  ipcMain.handle('wb:ccsList', (_e, appTypes?: string[]) =>
+    handle(() => listCcSwitch(appTypes)),
+  );
+
+  // CC Switch：导入
+  ipcMain.handle('wb:ccsImport', (_e, appTypes?: string[], overwrite?: boolean, onlyNames?: string[]) =>
+    handle(() => importCcSwitch(appTypes, overwrite === true, onlyNames)),
+  );
 }
 
 // ─────────────────────────── 生命周期 ───────────────────────────
+
+/** 是否正在退出。退出时窗口的 close 不能再被托盘逻辑拦下，否则 app.quit() 会被取消。 */
+let isQuitting = false;
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -457,6 +531,11 @@ if (!gotLock) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.focus();
     }
+  });
+
+  // 任何退出路径（Cmd+Q / 菜单退出 / 托盘退出 / 系统注销）都从这里先走一遍
+  app.on('before-quit', () => {
+    isQuitting = true;
   });
 
   app.whenReady().then(() => {
@@ -471,9 +550,10 @@ if (!gotLock) {
     });
   });
 
-  // 有关闭托盘后，关窗口=真退出
+  // 窗口全关后：退出中就不管；有托盘则留在托盘；否则退出
   app.on('window-all-closed', () => {
-    if (tray && !tray.isDestroyed()) return; // 有托盘就不退出
+    if (isQuitting) return;
+    if (tray && !tray.isDestroyed()) return;
     app.quit();
   });
 }

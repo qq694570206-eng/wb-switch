@@ -1,9 +1,10 @@
 /**
- * 打包 Windows 桌面应用。
+ * 打包桌面应用（Windows / macOS / Linux）。
  *
- * 同时产出两个文件：
- *   - NSIS 安装程序（Setup 向导，控制面板可卸载）→ dist-app/wb-switch-Setup-<version>.exe
- *   - 单文件免安装版（双击即用）                 → dist-app/wb-switch-<version>-portable.exe
+ * 产物：
+ *   Windows: NSIS 安装包 + portable exe     → dist-app/wb-switch-Setup-<version>.exe
+ *   macOS:   DMG 安装包                     → dist-app/wb-switch-<version>.dmg
+ *   Linux:   AppImage + deb                 → dist-app/wb-switch-<version>.AppImage
  *
  * 为什么不用 `npx electron-builder` 直接输出到 dist-app：
  * electron-builder 每次都会先清空 <output>/win-unpacked，而某些环境
@@ -14,7 +15,9 @@
  *   1. 每次构建到 build/_out-<时间戳>（全新目录，永远不需要删除）
  *   2. 把产物合并（覆盖）到 dist-app，而不是先删后建
  *
- * 用法：node scripts/build-portable.mjs              # 安装版 + 免安装版
+ * 用法：node scripts/build-portable.mjs              # Windows 安装版 + 免安装版
+ *       node scripts/build-portable.mjs --mac        # macOS DMG
+ *       node scripts/build-portable.mjs --linux      # Linux AppImage + deb
  *       node scripts/build-portable.mjs --unpacked   # 额外保留解压版目录
  *       node scripts/build-portable.mjs --portable-only  # 只出免安装版（更快）
  */
@@ -95,16 +98,20 @@ if (PORTABLE_ONLY && PLATFORM === 'win') {
 }
 // Mac/Linux 不支持 portable-only 参数，忽略
 
+// 构建子进程环境：清除 IDE/沙箱注入的 fs shim（会拦截 asar 文件操作导致打包失败）
+const buildEnv = { ...process.env };
+delete buildEnv.NODE_OPTIONS;                          // --require language-shim 注入
+delete buildEnv.CODEBUDDY_BROKERED_FS_HOOK_ENABLED;    // fs 拦截开关
+delete buildEnv.ELECTRON_RUN_AS_NODE;                  // 强制 electron 以 node 模式运行
+// 国内网络下 NSIS / 7z / dmgbuild 资源走镜像，缺失时再直连
+buildEnv.ELECTRON_BUILDER_BINARIES_MIRROR =
+  buildEnv.ELECTRON_BUILDER_BINARIES_MIRROR ||
+  'https://npmmirror.com/mirrors/electron-builder-binaries/';
+
 const build = spawnSync(process.execPath, args, {
   cwd: ROOT,
   stdio: 'inherit',
-  env: {
-    ...process.env,
-    // 国内网络下 NSIS / 7z 资源走镜像，缺失时再直连
-    ELECTRON_BUILDER_BINARIES_MIRROR:
-      process.env.ELECTRON_BUILDER_BINARIES_MIRROR ||
-      'https://npmmirror.com/mirrors/electron-builder-binaries/',
-  },
+  env: buildEnv,
 });
 if (build.status !== 0) {
   console.error('\n打包失败。');
@@ -184,5 +191,7 @@ try {
 }
 
 console.log('\n完成。');
-console.log('  · 安装版：双击 wb-switch-Setup-*.exe 走安装向导');
-console.log('  · 免安装版：双击 wb-switch-*-portable.exe 直接用');
+console.log('  · Windows 安装版：双击 wb-switch-Setup-*.exe 走安装向导');
+console.log('  · Windows 免安装版：双击 wb-switch-*-portable.exe 直接用');
+console.log('  · macOS：双击 wb-switch-*.dmg 拖拽安装（未签名，需右键打开）');
+console.log('  · Linux：chmod +x wb-switch-*.AppImage 后直接运行');

@@ -25,6 +25,9 @@ const api = {
   remove: (name: string) => ipcRenderer.invoke('wb:remove', name),
   rename: (from: string, to: string) => ipcRenderer.invoke('wb:rename', from, to),
   backups: () => ipcRenderer.invoke('wb:backups'),
+  backupNow: () => ipcRenderer.invoke('wb:backupNow'),
+  settings: () => ipcRenderer.invoke('wb:settings'),
+  saveSettings: (patch: { autoBackup?: boolean }) => ipcRenderer.invoke('wb:saveSettings', patch),
   restore: (file: string) => ipcRenderer.invoke('wb:restore', file),
   doctor: () => ipcRenderer.invoke('wb:doctor'),
   fetchModels: (input: { url: string; apiKey: string; timeoutMs?: number; proxyUrl?: string }) =>
@@ -47,6 +50,10 @@ const api = {
   importJson: (jsonStr: string, name: string) => ipcRenderer.invoke('wb:importJson', jsonStr, name),
   reveal: (p?: string) => ipcRenderer.invoke('wb:reveal', p),
   copy: (text: string) => ipcRenderer.invoke('wb:copy', text),
+  migrate: (overwrite = false) => ipcRenderer.invoke('wb:migrate', overwrite),
+  ccsList: (appTypes?: string[]) => ipcRenderer.invoke('wb:ccsList', appTypes),
+  ccsImport: (appTypes?: string[], overwrite = false, onlyNames?: string[]) =>
+    ipcRenderer.invoke('wb:ccsImport', appTypes, overwrite, onlyNames),
   onTraySwitched: (cb: (name: string) => void) => {
     ipcRenderer.on('wb:tray-switched', (_e, name: string) => cb(name));
   },

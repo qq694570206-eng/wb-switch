@@ -8,6 +8,7 @@
  *     preload.cjs       —— 预加载脚本
  *     renderer/         —— 界面（HTML/CSS/JS，直接拷贝）
  *     icon.ico          —— 从 assets/icon.ico 复制
+ *     icon.png          —— 从 assets/icon.png 复制（macOS/Linux 托盘用）
  *
  * 之后由 scripts/build-app.mjs 把这个目录装进 Electron 运行时。
  */
@@ -69,8 +70,11 @@ await esbuild.build({
 console.log('· 拷贝界面资源');
 copyDir(path.join(ROOT, 'src/gui/renderer'), path.join(APP, 'renderer'));
 
-const icon = path.join(ROOT, 'assets', 'icon.ico');
-if (fs.existsSync(icon)) fs.copyFileSync(icon, path.join(APP, 'icon.ico'));
+// 两个图标都拷：Windows 用 .ico，macOS/Linux 的托盘必须用 .png（nativeImage 不认 ICO）
+for (const name of ['icon.ico', 'icon.png']) {
+  const src = path.join(ROOT, 'assets', name);
+  if (fs.existsSync(src)) fs.copyFileSync(src, path.join(APP, name));
+}
 
 console.log('· 写入 package.json');
 fs.writeFileSync(

@@ -34,6 +34,12 @@ import {
 } from './profiles.js';
 import { readState, setActive } from './state.js';
 import {
+  migrateFromSourcesJson,
+  importFromCcSwitch,
+  readCcSwitchProviders,
+  type CcSwitchProvider,
+} from './migrate.js';
+import {
   prepareRoot,
   readCurrentModels,
   switchTo,
@@ -58,6 +64,7 @@ import {
   stringifyJson,
   writeFileAtomic,
 } from './fsutil.js';
+import { readSettings, writeSettings } from './settings.js';
 import {
   c,
   confirm,
@@ -77,6 +84,9 @@ import {
 
 const VERSION = '1.7.0';
 
+/** 超过这个模型数，切换时给出醒目提醒（不硬拦，只提醒） */
+const MODEL_COUNT_WARN = 50;
+
 // ─────────────────────────── 参数解析 ───────────────────────────
 
 interface Args {
@@ -94,6 +104,7 @@ const BOOLEAN_FLAGS = new Set([
   'json',
   'verbose',
   'quiet',
+  'backup',
   'no-backup',
   'from-current',
   'switch',
@@ -230,10 +241,18 @@ ${b('源管理')}
   wb-switch export [名称]          ${g('导出源为 JSON（默认输出到 stdout）')}
   wb-switch import <文件> [名称]   ${g('从 JSON 文件导入源')}
 
+${b('迁移与导入')}
+  wb-switch migrate                 ${g('把旧 sources.json 批量迁移为 profiles')}
+  wb-switch import-ccswitch         ${g('从 CC Switch 导入 provider 为源')}
+  wb-switch ccs                     ${g('只读列出 CC Switch 里的 provider')}
+  wb-switch ccswitch --app claude   ${g('筛选 app_type 导入（可逗号分隔多个）')}
+
 ${b('备份与自检')}
-  wb-switch backup                 ${g('立即备份当前 models.json')}
+  wb-switch backup                 ${g('立即备份当前 models.json（切换时默认不自动备份）')}
   wb-switch backups                ${g('查看历史备份')}
   wb-switch restore [备份文件]     ${g('还原 models.json（缺省选最新备份）')}
+  wb-switch config                 ${g('查看设置（autoBackup 等）')}
+  wb-switch config autoBackup=on   ${g('开启「切换前自动备份」')}
   wb-switch doctor                 ${g('检查配置目录、文件与环境是否正常')}
 
 ${b('常用选项')}
@@ -243,7 +262,8 @@ ${b('常用选项')}
   -f, --force                      ${g('内容一致时也强制重写')}
   -v, --verbose                    ${g('输出更多细节')}
       --json                       ${g('以 JSON 输出（便于脚本调用）')}
-      --no-backup                  ${g('切换时不备份（不推荐）')}
+      --backup                     ${g('本次切换前归档备份一份')}
+      --no-backup                  ${g('本次切换不归档备份（默认即如此）')}
       --no-color / --ascii         ${g('禁用颜色 / 使用纯 ASCII 符号')}
   -h, --help                       ${g('显示帮助')}
   -V, --version                    ${g('显示版本')}
@@ -553,10 +573,13 @@ function cmdUse(a: Args, nameArg?: string): number {
   if (!name) throw new UsageError('用法：wb-switch use <名称>');
   const dryRun = has(a, 'dry-run');
 
+  // --backup 单次归档，--no-backup 单次不归档，都不传就按 settings.autoBackup
+  const backupOpt = has(a, 'backup') ? true : has(a, 'no-backup') ? false : undefined;
+
   const result = switchTo(name, {
     configDir: r,
     dryRun,
-    noBackup: has(a, 'no-backup'),
+    backup: backupOpt,
     force: has(a, 'force'),
   });
 
@@ -581,8 +604,20 @@ function cmdUse(a: Args, nameArg?: string): number {
     process.stdout.write(`  写入文件  ${result.target}\n`);
     process.stdout.write(`  模型数    ${result.profile.models.length} ${c.gray(`(${vendors.join(', ') || '-'})`)}\n`);
     process.stdout.write(`  主机      ${hosts.join(', ') || '-'}\n`);
+    if (result.profile.models.length > MODEL_COUNT_WARN) {
+      process.stdout.write(
+        `  ${c.yellow(`注意：模型数超过 ${MODEL_COUNT_WARN}，实际切换会把 WorkBuddy 的模型列表整体替换成这 ${result.profile.models.length} 个。`)}\n`,
+      );
+    }
     if (result.identical) process.stdout.write(`  ${c.yellow('注意：与当前配置内容一致，实际切换将只更新记录。')}\n`);
     return ExitCode.OK;
+  }
+
+  if (result.profile.models.length > MODEL_COUNT_WARN) {
+    warn(
+      `这个源有 ${result.profile.models.length} 个模型，models.json 的模型列表会被整体替换。` +
+        `只想留少数几个的话，建议先用 ${c.bold('export')} 导出、精简后再 ${c.bold('import')} 成一个新源。`,
+    );
   }
 
   if (result.identical) {
@@ -590,7 +625,11 @@ function cmdUse(a: Args, nameArg?: string): number {
   } else {
     ok(`已切换到「${c.bold(c.cyan(result.profile.name))}」 ${c.gray(`(${result.profile.models.length} 个模型 · ${vendors.join(', ') || '-'})`)}`);
     process.stdout.write(`  ${c.gray('写入')} ${result.target}\n`);
-    if (result.backup) process.stdout.write(`  ${c.gray('备份')} ${result.backup}\n`);
+    if (result.backup) {
+      process.stdout.write(`  ${c.gray('备份')} ${result.backup}\n`);
+    } else {
+      process.stdout.write(`  ${c.gray('备份')} ${c.gray('未备份（需要留档用 wb-switch backup）')}\n`);
+    }
     process.stdout.write(`  ${c.gray('主机')} ${hosts.join(', ') || '-'}\n`);
   }
 
@@ -960,6 +999,54 @@ function cmdDiff(a: Args): number {
   return ExitCode.OK;
 }
 
+// ─────────────────────────── 命令：config ───────────────────────────
+
+/** 查看 / 修改设置：wb-switch config [key=value ...] */
+function cmdConfig(a: Args): number {
+  const r = requireRoot(a);
+  const pairs = a.positional.slice(1).filter(Boolean);
+
+  if (pairs.length) {
+    const patch: { autoBackup?: boolean } = {};
+    for (const pair of pairs) {
+      const [rawKey, rawVal] = pair.split('=');
+      const key = (rawKey ?? '').trim();
+      const val = (rawVal ?? '').trim().toLowerCase();
+      if (key !== 'autoBackup') {
+        throw new UsageError(`不认识的设置项：${key}`, '可用：autoBackup=on|off');
+      }
+      if (!['on', 'off', 'true', 'false', '1', '0', 'yes', 'no'].includes(val)) {
+        throw new UsageError(`autoBackup 只接受 on / off，收到：${rawVal ?? ''}`);
+      }
+      patch.autoBackup = ['on', 'true', '1', 'yes'].includes(val);
+    }
+    const next = writeSettings(r, patch);
+    if (has(a, 'json')) {
+      jsonOut(next);
+      return ExitCode.OK;
+    }
+    ok(`autoBackup = ${next.autoBackup ? 'on' : 'off'}`);
+    process.stdout.write(
+      `  ${c.gray(
+        next.autoBackup
+          ? '切换前会把当前 models.json 归档到 backups/'
+          : '切换前不再归档备份，需要留档时用 wb-switch backup',
+      )}\n`,
+    );
+    return ExitCode.OK;
+  }
+
+  const s = readSettings(r);
+  if (has(a, 'json')) {
+    jsonOut(s);
+    return ExitCode.OK;
+  }
+  heading('设置');
+  process.stdout.write(`  autoBackup   ${s.autoBackup ? c.green('on') : c.gray('off')}  ${c.gray('切换前是否归档备份到 backups/')}\n`);
+  process.stdout.write(`  ${c.gray('修改：wb-switch config autoBackup=on|off')}\n`);
+  return ExitCode.OK;
+}
+
 // ─────────────────────────── 命令：backup / backups / restore ───────────────────────────
 
 function cmdBackup(a: Args): number {
@@ -969,7 +1056,7 @@ function cmdBackup(a: Args): number {
     warn(`当前没有 models.json 可备份：${file}`);
     return ExitCode.CONFIG;
   }
-  const target = backupFile(file, backupsDir(r), 'models');
+  const target = backupFile(file, backupsDir(r), 'manual');
   if (has(a, 'json')) {
     jsonOut({ backup: target });
     return ExitCode.OK;
@@ -1149,6 +1236,133 @@ interface DoctorCheck {
   name: string;
   level: CheckLevel;
   detail: string;
+}
+
+// ─────────────────────────── 命令：migrate ───────────────────────────
+
+function cmdMigrate(a: Args): number {
+  const overwrite = has(a, 'force') || has(a, 'overwrite');
+  const dryRun = has(a, 'dry-run');
+  const json = has(a, 'json');
+
+  const result = migrateFromSourcesJson(undefined, overwrite);
+
+  if (json) {
+    jsonOut(result);
+    return ExitCode.OK;
+  }
+
+  if (!result.legacyPath) {
+    info('未找到旧 sources.json，无需迁移。');
+    process.stdout.write(`  ${c.gray('查找路径：')} ~/.workbuddy/wb-switch/sources.json\n`);
+    return ExitCode.OK;
+  }
+
+  process.stdout.write(`\n${c.bold('旧文件')} ${result.legacyPath}\n`);
+  process.stdout.write(`${c.bold('源总数')} ${result.total}\n`);
+
+  if (dryRun) {
+    process.stdout.write(`\n${c.yellow('--dry-run')} 演算模式，未写入。\n`);
+    process.stdout.write(`  将导入 ${result.imported.length} 个，跳过 ${result.skipped.length} 个\n`);
+    if (result.imported.length) {
+      for (const n of result.imported) process.stdout.write(`    ${c.green('+')} ${n}\n`);
+    }
+    if (result.skipped.length) {
+      process.stdout.write(`  ${c.gray('同名跳过（加 --force 覆盖）：')}\n`);
+      for (const n of result.skipped) process.stdout.write(`    ${c.gray('=')} ${n}\n`);
+    }
+    return ExitCode.OK;
+  }
+
+  if (result.imported.length) {
+    ok(`成功导入 ${result.imported.length} 个源：`);
+    for (const n of result.imported) process.stdout.write(`  ${c.green('+')} ${n}\n`);
+  }
+  if (result.skipped.length) {
+    process.stdout.write(`\n${c.gray(`跳过 ${result.skipped.length} 个同名源（加 --force 覆盖）：`)}\n`);
+    for (const n of result.skipped) process.stdout.write(`  ${c.gray('=')} ${n}\n`);
+  }
+  if (result.failed.length) {
+    process.stdout.write(`\n${c.red(`失败 ${result.failed.length} 个：`)}\n`);
+    for (const f of result.failed) {
+      process.stdout.write(`  ${c.red('!')} ${f.name} — ${f.reason}\n`);
+    }
+  }
+  if (result.imported.length > 0) {
+    process.stdout.write(`\n${c.gray('提示')} 迁移后的源位于 profiles/ 目录，旧 sources.json 保留不动。\n`);
+  }
+  return ExitCode.OK;
+}
+
+// ─────────────────────────── 命令：import-ccswitch ───────────────────────────
+
+function cmdImportCcSwitch(a: Args): number {
+  const json = has(a, 'json');
+  const dryRun = has(a, 'dry-run');
+  const overwrite = has(a, 'force') || has(a, 'overwrite');
+  const appArg = str(a, 'app');
+
+  // 只读列出模式：ccs / ccswitch 别名 → 列出；import-ccswitch → 导入
+  const subCmd = a.positional[0];
+  const isListOnly = subCmd === 'ccs' || subCmd === 'ccswitch';
+
+  const appTypes = appArg ? appArg.split(',').map((s) => s.trim()).filter(Boolean) : undefined;
+
+  if (isListOnly || (dryRun && subCmd !== 'import-ccswitch')) {
+    const providers = readCcSwitchProviders(appTypes);
+    if (providers.length === 0) {
+      info('CC Switch 中没有可导入的 provider。');
+      process.stdout.write(`  ${c.gray('数据库：')} ~/.cc-switch/cc-switch.db\n`);
+      return ExitCode.OK;
+    }
+
+    if (json) {
+      jsonOut(providers);
+      return ExitCode.OK;
+    }
+
+    heading(`CC Switch providers (${providers.length})`);
+    process.stdout.write(`\n  ${'NAME'.padEnd(28)} ${'APP'.padEnd(14)} ${'URL'.padEnd(48)} ${'FMT'.padEnd(12)}\n`);
+    process.stdout.write(`  ${'-'.repeat(28)} ${'-'.repeat(14)} ${'-'.repeat(48)} ${'-'.repeat(12)}\n`);
+    for (const p of providers) {
+      const u = p.url.length > 46 ? p.url.slice(0, 46) + '..' : p.url;
+      process.stdout.write(
+        `  ${p.name.slice(0, 28).padEnd(28)} ${p.appType.padEnd(14)} ${u.padEnd(48)} ${(p.apiFormat || '-').padEnd(12)}\n`,
+      );
+    }
+    process.stdout.write(`\n  ${c.gray('导入：')} wb-switch import-ccswitch${appArg ? ` --app ${appArg}` : ''} ${overwrite ? '--force' : '[--force]'}\n`);
+    return ExitCode.OK;
+  }
+
+  const result = importFromCcSwitch(appTypes, overwrite);
+
+  if (json) {
+    jsonOut(result);
+    return ExitCode.OK;
+  }
+
+  if (result.total === 0) {
+    info('CC Switch 中没有可导入的 provider。');
+    return ExitCode.OK;
+  }
+
+  heading(`从 CC Switch 导入（共 ${result.total} 个 provider）`);
+
+  if (result.imported.length) {
+    ok(`成功导入 ${result.imported.length} 个源：`);
+    for (const n of result.imported) process.stdout.write(`  ${c.green('+')} ${n}\n`);
+  }
+  if (result.skipped.length) {
+    process.stdout.write(`\n${c.gray(`跳过 ${result.skipped.length} 个同名源（加 --force 覆盖）：`)}\n`);
+    for (const n of result.skipped) process.stdout.write(`  ${c.gray('=')} ${n}\n`);
+  }
+  if (result.failed.length) {
+    process.stdout.write(`\n${c.red(`失败 ${result.failed.length} 个：`)}\n`);
+    for (const f of result.failed) {
+      process.stdout.write(`  ${c.red('!')} ${f.name} — ${f.reason}\n`);
+    }
+  }
+  return ExitCode.OK;
 }
 
 function cmdDoctor(a: Args): number {
@@ -1359,6 +1573,9 @@ async function main(argv: string[]): Promise<number> {
       case 'rename':
       case 'mv':
         return cmdRename(args);
+      case 'config':
+      case 'settings':
+        return cmdConfig(args);
       case 'backup':
         return cmdBackup(args);
       case 'backups':
@@ -1373,6 +1590,12 @@ async function main(argv: string[]): Promise<number> {
       case 'doctor':
       case 'check':
         return cmdDoctor(args);
+      case 'migrate':
+        return cmdMigrate(args);
+      case 'import-ccswitch':
+      case 'ccswitch':
+      case 'ccs':
+        return cmdImportCcSwitch(args);
       default: {
         // 未识别的命令：若恰好是源名，则当作切换
         const r = a2root(args);
