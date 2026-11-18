@@ -32,6 +32,9 @@ import { maskKey } from '../config.js';
 /** 默认监听端口（避开 GUI 常用的 7532） */
 export const DEFAULT_GATEWAY_PORT = 7533;
 
+/** 失败时单后端重试次数（仍失败才切下一个源） */
+export const DEFAULT_RETRY = 10;
+
 export interface RouteBackend {
   /** 引用的源（profile）名称 */
   profile: string;
@@ -48,6 +51,8 @@ export interface RouteEntry {
 
 export interface RoutesFile {
   port: number;
+  /** 单后端失败时的重试次数（重试完仍失败再切下一个源）；默认 10 */
+  retry?: number;
   routes: RouteEntry[];
 }
 
@@ -58,12 +63,16 @@ export function routesFile(root: string): string {
 /** 读路由表；不存在则返回空表（端口默认） */
 export function readRoutes(root: string): RoutesFile {
   const file = routesFile(root);
-  if (!exists(file)) return { port: DEFAULT_GATEWAY_PORT, routes: [] };
+  if (!exists(file)) return { port: DEFAULT_GATEWAY_PORT, retry: DEFAULT_RETRY, routes: [] };
   const raw = readJson<Partial<RoutesFile>>(file);
   const port =
     typeof raw.port === 'number' && raw.port >= 1 && raw.port <= 65535
       ? Math.floor(raw.port)
       : DEFAULT_GATEWAY_PORT;
+  const retry =
+    typeof raw.retry === 'number' && raw.retry >= 0 && raw.retry <= 100
+      ? Math.floor(raw.retry)
+      : DEFAULT_RETRY;
   const routes = Array.isArray(raw.routes) ? raw.routes.filter(r => r && typeof r === 'object') : [];
   const seen = new Set<string>();
   const entries: RouteEntry[] = [];
@@ -75,7 +84,7 @@ export function readRoutes(root: string): RoutesFile {
     entries.push({ alias, backends: backends.filter(b => b && typeof b === 'object') as RouteBackend[] });
     seen.add(alias);
   }
-  return { port, routes: entries };
+  return { port, retry, routes: entries };
 }
 
 /** 校验 alias 合法性 */
@@ -91,6 +100,32 @@ export function validateAlias(alias: string): string {
 export function writeRoutes(root: string, file: RoutesFile): void {
   ensureDir(dataDir(root));
   writeFileAtomic(routesFile(root), stringifyJson(file, { indent: 2, trailingNewline: true, eol: '\n' }));
+}
+
+/**
+ * 把组合（combo）成员合入路由表：组合每个成员 alias 一条路由，
+ * sources 即按序 fallback 链（与手写 routes.json 完全同构）。
+ * 已存在的同名 alias 覆盖（组合是最新意图）。
+ */
+export function mergeComboIntoRoutes(root: string, comboPath: import('../types.js').Profile): RoutesFile {
+  const file = readRoutes(root);
+  const members = comboPath.combo ?? [];
+  for (const m of members) {
+    file.routes = file.routes.filter(r => r.alias !== m.alias);
+    file.routes.push({ alias: m.alias, backends: m.sources.map(s => ({ profile: s.profile, model: s.model })) });
+  }
+  file.routes.sort((a, b) => a.alias.localeCompare(b.alias, 'zh-CN'));
+  writeRoutes(root, file);
+  return file;
+}
+
+/** 从路由表移除一组 alias（删除组合成员/组合时同步清理路由） */
+export function removeAliasesFromRoutes(root: string, aliases: string[]): RoutesFile {
+  const file = readRoutes(root);
+  const set = new Set(aliases.map(a => a.trim()));
+  file.routes = file.routes.filter(r => !set.has(r.alias));
+  writeRoutes(root, file);
+  return file;
 }
 
 /** 新增一条路由；alias 已存在则报错（或 force 覆盖） */

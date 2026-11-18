@@ -71,11 +71,15 @@ export function loadProfile(root: string, name: string): Profile {
   }
   const data = readJson<Partial<Profile>>(file);
   const models = validateModels(data.models, `源「${name}」`);
+  const type =
+    data.type === 'combo' || data.type === 'gateway' || data.type === 'normal' ? data.type : undefined;
   return {
     name: typeof data.name === 'string' && data.name ? data.name : name,
     description: typeof data.description === 'string' ? data.description : undefined,
+    type,
     origin: data.origin,
     models,
+    ...(Array.isArray(data.combo) ? { combo: data.combo } : {}),
   };
 }
 

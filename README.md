@@ -244,6 +244,38 @@ wb-switch gateway install         # macOS 开机自启（launchd + KeepAlive）
 
 路由表存在 `~/.workbuddy/wb-switch/routes.json`；换后端 = 改路由表 + `gateway restart`，`models.json` 从此不动。
 
+## 组合（v1.9 新增）：多源模型聚合 + 追加模式
+
+网关解决「同名模型」的路由；**组合**解决「把多个源的模型凑成一份配置」：
+
+- **组合是一个独立的源**（`profiles/<名>.json` 带 `type: "combo"`），不拆分、不替换现有源
+- **成员自由组合，不要求同名**：每个成员 = 一个别名 + 按序尝试的多个（源, 模型）后端，例如 `glm-any ← 183/glm-5.3 → Kimi/kimi-k3`
+- **失败转移升级**：单后端失败先**重试 10 次**（`routes.json` 的 `retry` 可调），仍失败才切下一个源；网关**热加载**路由表，改完即时生效不用重启
+- **选中组合 = 追加模式**：`use <组合名>` 不覆盖当前已选源，组合条目按顺序追加到 `models.json` 尾部；`state.appended` 记录追加顺序（`active` 保持首个源不变）
+- **追加普通源同理**：`append <源名...>` 把源的模型按序追加（不整体替换）；后续追加沿用同一规则
+- **重名保护**：组合名全局唯一（不能与源/组合重名）；追加时 id 冲突可 `--on-conflict error|skip|suffix`（默认报错，suffix 自动改名为 `id-2`）
+
+```bash
+# 1. 创建组合（成员 glm-any：183 优先，重试 10 次失败后转 Kimi）
+wb-switch combo create mymix --profile 183 --model glm-5.3 --alias glm-any --profile2 Kimi --model2 kimi-k3
+
+# 2. 组合再加一个成员（不同名的模型也行）
+wb-switch combo add mymix --profile OpenCode --model claude-sonnet-4.5 --alias sonnet
+
+# 3. 选中组合（追加模式：当前源 183 的条目原样保留，mymix 的成员追加在尾部）
+wb-switch use mymix
+
+# 4. 继续追加别的源（同样不覆盖）
+wb-switch append ModelScope --on-conflict skip
+
+# 5. 管理
+wb-switch combo list / show mymix / lint
+wb-switch combo rm-member mymix sonnet
+wb-switch combo remove mymix
+```
+
+组合成员经本地网关转发（`127.0.0.1:7533`），记得网关在跑：`wb-switch gateway start`。普通源的 `use`（整体替换）逻辑完全不变，两者并存。
+
 ## 从源码构建
 
 ```bash
@@ -252,7 +284,7 @@ npm run gui            # 开发模式直接开窗口
 npm run build:app      # 只构建 app 目录（build/app）
 npm run build:win       # 打包安装版 + 免安装版 → dist-app/
 npm run build:exe      # 打包命令行单文件 exe → dist-exe/（按需）
-npm test               # 51 项命令行断言 + 27 项模型获取断言 + 15 项网关断言
+npm test               # 51 项命令行断言 + 27 项模型获取断言 + 15 项网关断言 + 30 项组合断言
 npm run clean          # 清掉全部构建产物，只留 exe 与源码
 ```
 
@@ -291,10 +323,13 @@ src/
 │   ├── modelFetch.ts    # 拉取网关模型列表：端点推导、多格式解析、错误翻译
 │   └── renderer/        # 界面：index.html / styles.css / app.js（无框架）
 ├── gateway/
-│   ├── routes.ts        # 路由表（routes.json）：别名 → 有序后端列表
-│   ├── server.ts        # 网关服务器：查表转发、流式透传、失败转移、日志
+│   ├── routes.ts        # 路由表（routes.json）：别名 → 有序后端列表（支持 retry 与组合合并）
+│   ├── server.ts        # 网关服务器：查表转发、流式透传、重试 10 次后切源、热加载、日志
 │   ├── daemon.ts        # 守护进程管理：pid 文件、launchd 开机自启
 │   └── cli.ts           # gateway 子命令组（start/stop/routes/bind/logs...）
+├── combo.ts             # 组合存储：成员定义、重名校验、lint
+├── combo-cli.ts          # combo 子命令组（create/add/rm-member/list/show/lint/remove）
+├── appender.ts          # 追加模式：useCombo（组合选中=追加）/ appendProfile（追加普通源）
 ├── switcher.ts          # 切换核心：快照 → 原子写 → 回读校验 → 回滚
 ├── settings.ts          # 用户偏好（autoBackup 等）
 ├── profiles.ts          # 源存储、前缀解析、删除保留副本
@@ -315,7 +350,8 @@ scripts/
 tests/
 ├── smoke.mjs            # 51 项命令行端到端断言
 ├── modelfetch.mjs       # 27 项模型获取断言（内置假网关）
-└── gateway.mjs          # 15 项网关断言（转发/改写/失败转移/日志/bind）
+├── gateway.mjs          # 15 项网关断言（转发/改写/失败转移/日志/bind）
+└── combo.mjs            # 30 项组合断言（追加模式/重名校验/重试切源/热加载）
 ```
 
 ## 常见问题

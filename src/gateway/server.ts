@@ -45,20 +45,35 @@ const MAX_BODY = 64 * 1024 * 1024;
 export function startGatewayServer(options: GatewayOptions): Promise<http.Server> {
   return new Promise((resolve, reject) => {
     const { root } = options;
-    const routesFile = readRoutes(root);
-    const port = options.port ?? routesFile.port;
+    const bootRoutes = readRoutes(root);
+    const port = options.port ?? bootRoutes.port;
     const host = options.host ?? '127.0.0.1';
     const logDir = options.logDir ?? path.join(root, 'wb-switch', 'logs');
     fs.mkdirSync(logDir, { recursive: true });
     const logFile = path.join(logDir, LOG_NAME);
 
-    if (routesFile.routes.length === 0) {
+    if (bootRoutes.routes.length === 0) {
       reject(new Error('路由表为空：先执行 wb-switch gateway route add 配置至少一条路由。'));
       return;
     }
 
-    const routeMap = new Map<string, RouteEntry>();
-    for (const r of routesFile.routes) routeMap.set(r.alias, r);
+    // 热加载：每个请求重读 routes.json——路由/组合变更即时生效，无需重启网关。
+    // routes.json 是原子写的小文件，读取代价可忽略。
+    const loadRouteMap = (): { routeMap: Map<string, RouteEntry>; retry: number } => {
+      try {
+        const file = readRoutes(root);
+        const map = new Map<string, RouteEntry>();
+        for (const r of file.routes) map.set(r.alias, r);
+        return { routeMap: map, retry: file.retry ?? 10 };
+      } catch {
+        // 读取失败（如写一半）时退回上次成功快照，绝不因配置文件抖动断流
+        const map = new Map<string, RouteEntry>();
+        for (const r of lastGoodRoutes) map.set(r.alias, r);
+        return { routeMap: map, retry: lastGoodRetry };
+      }
+    };
+    let lastGoodRoutes: RouteEntry[] = bootRoutes.routes;
+    let lastGoodRetry = bootRoutes.retry ?? 10;
 
     const writeLog = (line: LogLine) => {
       try {
@@ -69,12 +84,12 @@ export function startGatewayServer(options: GatewayOptions): Promise<http.Server
     };
 
     const server = http.createServer((req, res) => {
-      void handle(req, res, { routeMap, root, port, writeLog });
+      void handle(req, res, { root, port, writeLog, loadRouteMap });
     });
 
     server.on('error', reject);
     server.listen(port, host, () => {
-      console.log(`[wb-gateway] listening on http://${host}:${port} · ${routesFile.routes.length} routes · log ${logFile}`);
+      console.log(`[wb-gateway] listening on http://${host}:${port} · ${bootRoutes.routes.length} routes · hot-reload on · log ${logFile}`);
       resolve(server);
     });
 
@@ -86,25 +101,26 @@ export function startGatewayServer(options: GatewayOptions): Promise<http.Server
       req: http.IncomingMessage,
       res: http.ServerResponse,
       ctx: {
-        routeMap: Map<string, RouteEntry>;
         root: string;
         port: number;
         writeLog: (line: LogLine) => void;
+        loadRouteMap: () => { routeMap: Map<string, RouteEntry>; retry: number };
       },
     ): Promise<void> {
       const started = Date.now();
       const url = req.url ?? '/';
+      const { routeMap, retry } = ctx.loadRouteMap();
 
       // 健康检查
       if (url === '/healthz' || url === '/wb-gateway/healthz') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, routes: ctx.routeMap.size, ts: new Date().toISOString() }));
+        res.end(JSON.stringify({ ok: true, routes: routeMap.size, retry, ts: new Date().toISOString() }));
         return;
       }
 
       // 模型列表：返回全部 alias
       if (req.method === 'GET' && (url === '/v1/models' || url === '/v1/models/')) {
-        const models = [...ctx.routeMap.keys()].sort().map(id => ({ id, object: 'model', owned_by: 'wb-gateway' }));
+        const models = [...routeMap.keys()].sort().map(id => ({ id, object: 'model', owned_by: 'wb-gateway' }));
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ object: 'list', data: models }));
         return;
@@ -139,11 +155,11 @@ export function startGatewayServer(options: GatewayOptions): Promise<http.Server
         return;
       }
 
-      const route = ctx.routeMap.get(model);
+      const route = routeMap.get(model);
       if (!route) {
         res.writeHead(404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
-          error: { message: `wb-gateway: 未知模型 "${model}"。可用：${[...ctx.routeMap.keys()].sort().join(', ')}` },
+          error: { message: `wb-gateway: 未知模型 "${model}"。可用：${[...routeMap.keys()].sort().join(', ')}` },
         }));
         return;
       }
@@ -158,19 +174,40 @@ export function startGatewayServer(options: GatewayOptions): Promise<http.Server
         return;
       }
 
-      // 逐个后端尝试
+      // 逐个后端尝试：每个后端先重试 retry 次（含首次共 retry+1 次尝试），
+      // 仍失败才切下一个源。重试只发生在「还没开始回包」的阶段——
+      // 一旦流式响应开始（headers 已发），中途失败只断流不转移（客户端可自行重发）。
       let lastFailure = '';
       for (let i = 0; i < usable.length; i++) {
         const backend = usable[i]!;
         const isLast = i === usable.length - 1;
-        const result = await forwardOnce(req, body, backend, res, isLast, {
-          alias: route.alias,
-          started,
-          writeLog: ctx.writeLog,
-        });
-        if (result === 'done') return;
-        if (result === 'fail-final') return;
-        lastFailure = result;
+        const attempts = isLast ? 1 : Math.max(1, retry + 1);
+        let attemptFailure = '';
+        for (let attempt = 1; attempt <= attempts; attempt++) {
+          const result = await forwardOnce(req, body, backend, res, isLast, {
+            alias: route.alias,
+            started,
+            writeLog: ctx.writeLog,
+            attempt,
+          });
+          if (result === 'done') return;
+          if (result === 'fail-final') return;
+          attemptFailure = result;
+          // 重试间隔：200ms 线性递增，避免打爆上游
+          if (attempt < attempts) await new Promise(r => setTimeout(r, Math.min(200 * attempt, 2000)));
+        }
+        if (!isLast) {
+          ctx.writeLog({
+            ts: new Date().toISOString(),
+            alias: route.alias,
+            backend: `${backend.profile}/${backend.model}`,
+            status: 0,
+            ms: Date.now() - started,
+            bytes: 0,
+            failed: `give-up after ${attempts} attempts (${attemptFailure}) → next source`,
+          });
+        }
+        lastFailure = attemptFailure;
       }
       // 理论上到不了这里（isLast 时必返回）
       res.writeHead(502, { 'Content-Type': 'application/json' });
@@ -181,7 +218,7 @@ export function startGatewayServer(options: GatewayOptions): Promise<http.Server
      * 转发一次。返回：
      *   'done'       —— 已成功响应（或最终失败已回复客户端）
      *   'fail-final' —— 已把最后一个后端的错误回复给客户端
-     *   其他字符串    —— 失败原因（可继续尝试下一个后端）
+     *   其他字符串    —— 失败原因（可重试 / 可继续尝试下一个后端）
      */
     async function forwardOnce(
       req: http.IncomingMessage,
@@ -189,7 +226,7 @@ export function startGatewayServer(options: GatewayOptions): Promise<http.Server
       backend: { profile: string; model: string; url: string; apiKey: string },
       res: http.ServerResponse,
       isLast: boolean,
-      meta: { alias: string; started: number; writeLog: (line: LogLine) => void },
+      meta: { alias: string; started: number; writeLog: (line: LogLine) => void; attempt: number },
     ): Promise<'done' | 'fail-final' | string> {
       const target = new URL(backend.url);
       const isTls = target.protocol === 'https:';
@@ -230,12 +267,12 @@ export function startGatewayServer(options: GatewayOptions): Promise<http.Server
           },
           upstreamRes => {
             const status = upstreamRes.statusCode ?? 502;
-            const resHeaders = upstreamRes.headers;
 
-            // 可重试状态：连接成功但后端报错（5xx / 401 / 403 / 429）
+            // 可重试状态：连接成功但后端报错（5xx / 401 / 403 / 429）。
+            // 非 last 后端 → 返回失败原因，由外层决定重试还是切下一个源。
             const retryable = status >= 500 || status === 401 || status === 403 || status === 429;
             if (retryable && !isLast) {
-              // 读完丢弃响应，尝试下一个后端
+              // 读完丢弃响应，尝试下一个
               upstreamRes.resume();
               meta.writeLog({
                 ts: new Date().toISOString(),
@@ -244,7 +281,7 @@ export function startGatewayServer(options: GatewayOptions): Promise<http.Server
                 status,
                 ms: Date.now() - meta.started,
                 bytes: 0,
-                failed: `upstream ${status}`,
+                failed: `upstream ${status} (attempt ${meta.attempt})`,
               });
               resolvePromise(`upstream ${status} from ${backendLabel}`);
               return;

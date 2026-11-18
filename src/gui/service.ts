@@ -30,6 +30,8 @@ import {
 } from '../profiles.js';
 import { readSettings, writeSettings } from '../settings.js';
 import { readState, setActive } from '../state.js';
+import { ProfileError } from '../errors.js';
+import { useCombo } from '../appender.js';
 import {
   migrateFromSourcesJson,
   readCcSwitchProviders,
@@ -282,6 +284,26 @@ export function getProfile(nameOrQuery: string): ProfileDetail {
 export function switchProfile(nameOrQuery: string, force = false): SwitchReport {
   const root = getRoot();
   prepareRoot(root);
+
+  // 组合分流：组合的「切换」= 追加模式（不覆盖当前源）
+  try {
+    const profile = loadProfile(root, nameOrQuery);
+    if (profile.type === 'combo') {
+      const res = useCombo(profile.name, { configDir: root });
+      return {
+        name: res.name,
+        identical: false,
+        backup: null,
+        modelCount: res.total,
+        previousModelCount: res.total - res.added.length,
+        updatedAt: new Date().toISOString(),
+      };
+    }
+  } catch (err) {
+    // 源不存在 → 沿用 switchTo 的原有报错（含候选列表）
+    if (!(err instanceof ProfileError)) throw err;
+  }
+
   const res = switchTo(nameOrQuery, { configDir: root, force });
   return {
     name: res.profile.name,

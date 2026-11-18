@@ -25,7 +25,6 @@ import {
   deleteProfile,
   listProfileNames,
   listProfiles,
-  loadProfile,
   profileExists,
   renameProfile,
   resolveProfileName,
@@ -66,6 +65,9 @@ import {
 } from './fsutil.js';
 import { readSettings, writeSettings } from './settings.js';
 import { cmdGateway } from './gateway/cli.js';
+import { cmdCombo, cmdAppend } from './combo-cli.js';
+import { loadProfile } from './profiles.js';
+import { useCombo, type ConflictPolicy } from './appender.js';
 import {
   c,
   confirm,
@@ -83,7 +85,7 @@ import {
   warn,
 } from './ui.js';
 
-const VERSION = '1.8.0';
+const VERSION = '1.9.0';
 
 /** 超过这个模型数，切换时给出醒目提醒（不硬拦，只提醒） */
 const MODEL_COUNT_WARN = 50;
@@ -143,6 +145,10 @@ const STRING_FLAGS = new Set([
   'profile4',
   'model5',
   'profile5',
+  'alias',
+  'after',
+  'on-conflict',
+  'conflict',
 ]);
 
 function parseArgs(argv: string[]): Args {
@@ -597,6 +603,22 @@ function cmdUse(a: Args, nameArg?: string): number {
   if (!name) throw new UsageError('用法：wb-switch use <名称>');
   const dryRun = has(a, 'dry-run');
 
+  // 组合分流：组合的「选中」是追加模式——不覆盖当前已选源，
+  // 组合条目按序追加到 models.json 尾部（普通源逻辑保持整体替换不变）
+  try {
+    const profile = loadProfile(r, name);
+    if (profile.type === 'combo') {
+      return cmdUseCombo(a, profile.name, r);
+    }
+  } catch (err) {
+    // 源不存在时沿用原有报错路径（resolveProfileName 会给出候选列表）
+    if (!(err instanceof ProfileError)) throw err;
+    throw new ProfileError(
+      `找不到源：${name}`,
+      `可用源：${listProfileNames(r).join(', ')}`,
+    );
+  }
+
   // --backup 单次归档，--no-backup 单次不归档，都不传就按 settings.autoBackup
   const backupOpt = has(a, 'backup') ? true : has(a, 'no-backup') ? false : undefined;
 
@@ -659,6 +681,47 @@ function cmdUse(a: Args, nameArg?: string): number {
 
   process.stdout.write(
     `\n${c.yellow('提示')} WorkBuddy 会缓存当前模型配置，切换后请在应用内重新打开对话，或重启 WorkBuddy 使其生效。\n`,
+  );
+  return ExitCode.OK;
+}
+
+/** use <组合名>：追加模式（不覆盖当前源，组合条目按序追加到尾部） */
+function cmdUseCombo(a: Args, name: string, root: string): number {
+  const policyRaw = (() => {
+    const v = a.flags.get('on-conflict') ?? a.flags.get('conflict');
+    return typeof v === 'string' ? v : undefined;
+  })();
+  if (policyRaw && !['error', 'skip', 'suffix'].includes(policyRaw)) {
+    fail(`--on-conflict 取值应为 error|skip|suffix，收到：${policyRaw}`);
+    return ExitCode.USAGE;
+  }
+  const policy: ConflictPolicy = policyRaw === 'skip' || policyRaw === 'suffix' ? policyRaw : 'error';
+
+  const result = useCombo(name, { configDir: root, onConflict: policy });
+
+  if (has(a, 'json')) {
+    jsonOut({
+      appended: result.name,
+      added: result.added.map(m => m.id),
+      skipped: result.skipped.map(m => m.id),
+      renamed: result.renamed,
+      total: result.total,
+      order: result.appended,
+    });
+    return ExitCode.OK;
+  }
+
+  const bits = [`${result.added.length} 个成员已追加`];
+  if (result.skipped.length) bits.push(`${result.skipped.length} 个跳过`);
+  if (result.renamed.length) bits.push(`${result.renamed.length} 个改名`);
+  ok(`组合「${c.bold(c.cyan(result.name))}」已按追加模式选中（${bits.join(' · ')}）。`);
+  process.stdout.write(`  ${c.gray('models.json 共')} ${result.total} ${c.gray('条（原有条目未动）')}\n`);
+  if (result.renamed.length) {
+    for (const rn of result.renamed) process.stdout.write(`    ${c.gray(rn.from + ' → ' + rn.to)}\n`);
+  }
+  process.stdout.write(`  ${c.gray('追加顺序')} ${result.appended.join(c.gray(' → '))}\n`);
+  process.stdout.write(
+    `\n${c.yellow('提示')} 组合成员经本地网关转发（fallback 链重试 10 次后切下一个源）；确保网关在运行：wb-switch gateway start\n`,
   );
   return ExitCode.OK;
 }
@@ -1623,6 +1686,10 @@ async function main(argv: string[]): Promise<number> {
       case 'gateway':
       case 'gw':
         return await cmdGateway(args);
+      case 'combo':
+        return cmdCombo(args);
+      case 'append':
+        return cmdAppend(args);
       default: {
         // 未识别的命令：若恰好是源名，则当作切换
         const r = a2root(args);
