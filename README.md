@@ -214,6 +214,36 @@ wb-switch import-ccswitch --app claude   # 从 CC Switch 导入（可按 app_typ
 
 退出码：`0` 成功 / `2` 用法 / `3` 配置 / `4` 源 / `5` 环境。
 
+## 网关：同名模型路由（v1.8 新增）
+
+WorkBuddy 的 `models.json` 不允许两条配置叫同一个模型名。想「183 和 OpenRouter 都提供 `glm-4.7`，谁活着用谁」时，只能整个切源。网关功能把这个问题挪到本地解决：
+
+```
+WorkBuddy ──(models.json 固定指向本地网关)──▶ wb-gateway(127.0.0.1:7533) ──查路由表──▶ 183 / OpenRouter / Kimi ...
+```
+
+- `models.json` 里每个模型名只出现一次（指向网关），**同名冲突天然消失**
+- 路由表配置每个别名的**有序后端列表**：第一个失败（连接失败 / 5xx / 401 / 403 / 429）自动落到下一个
+- 零智能：不做协议转换、不做意图路由，只查表转发（OpenAI 兼容），日志记录每次 `alias → 后端 · 状态 · 耗时`
+- 独立进程常驻（不依赖桌面应用），macOS 可装 launchd 开机自启
+
+```bash
+# 1. 配路由：glm-4.7 优先 183，挂了转 OpenRouter
+wb-switch gateway route add glm-4.7 --profile 183 --model glm-4.7 --profile2 openrouter --model2 z-ai/glm-4.7
+
+# 2. 后台启动 + 让 WorkBuddy 指向网关
+wb-switch gateway start
+wb-switch gateway bind            # 生成名为 gateway 的源并切换过去
+
+# 3. 日常
+wb-switch gateway routes          # 看路由表
+wb-switch gateway logs            # 看请求日志（谁慢了、谁挂了一目了然）
+wb-switch gateway lint            # 校验路由引用是否有效
+wb-switch gateway install         # macOS 开机自启（launchd + KeepAlive）
+```
+
+路由表存在 `~/.workbuddy/wb-switch/routes.json`；换后端 = 改路由表 + `gateway restart`，`models.json` 从此不动。
+
 ## 从源码构建
 
 ```bash
@@ -222,7 +252,7 @@ npm run gui            # 开发模式直接开窗口
 npm run build:app      # 只构建 app 目录（build/app）
 npm run build:win       # 打包安装版 + 免安装版 → dist-app/
 npm run build:exe      # 打包命令行单文件 exe → dist-exe/（按需）
-npm test               # 45 项命令行断言 + 27 项模型获取断言
+npm test               # 51 项命令行断言 + 27 项模型获取断言 + 15 项网关断言
 npm run clean          # 清掉全部构建产物，只留 exe 与源码
 ```
 
@@ -260,6 +290,11 @@ src/
 │   ├── service.ts       # 业务服务层（不依赖 Electron，可单独测试）
 │   ├── modelFetch.ts    # 拉取网关模型列表：端点推导、多格式解析、错误翻译
 │   └── renderer/        # 界面：index.html / styles.css / app.js（无框架）
+├── gateway/
+│   ├── routes.ts        # 路由表（routes.json）：别名 → 有序后端列表
+│   ├── server.ts        # 网关服务器：查表转发、流式透传、失败转移、日志
+│   ├── daemon.ts        # 守护进程管理：pid 文件、launchd 开机自启
+│   └── cli.ts           # gateway 子命令组（start/stop/routes/bind/logs...）
 ├── switcher.ts          # 切换核心：快照 → 原子写 → 回读校验 → 回滚
 ├── settings.ts          # 用户偏好（autoBackup 等）
 ├── profiles.ts          # 源存储、前缀解析、删除保留副本
@@ -278,8 +313,9 @@ scripts/
 ├── apply-resources.mjs  # 写图标与版本信息
 └── clean.mjs            # 清理构建产物
 tests/
-├── smoke.mjs            # 45 项命令行端到端断言
-└── modelfetch.mjs       # 27 项模型获取断言（内置假网关）
+├── smoke.mjs            # 51 项命令行端到端断言
+├── modelfetch.mjs       # 27 项模型获取断言（内置假网关）
+└── gateway.mjs          # 15 项网关断言（转发/改写/失败转移/日志/bind）
 ```
 
 ## 常见问题

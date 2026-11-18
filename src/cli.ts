@@ -65,6 +65,7 @@ import {
   writeFileAtomic,
 } from './fsutil.js';
 import { readSettings, writeSettings } from './settings.js';
+import { cmdGateway } from './gateway/cli.js';
 import {
   c,
   confirm,
@@ -82,7 +83,7 @@ import {
   warn,
 } from './ui.js';
 
-const VERSION = '1.7.0';
+const VERSION = '1.8.0';
 
 /** 超过这个模型数，切换时给出醒目提醒（不硬拦，只提醒） */
 const MODEL_COUNT_WARN = 50;
@@ -94,7 +95,6 @@ interface Args {
   flags: Map<string, string | boolean>;
   configDir?: string;
 }
-
 const BOOLEAN_FLAGS = new Set([
   'help',
   'version',
@@ -132,6 +132,17 @@ const STRING_FLAGS = new Set([
   'output',
   'name',
   'out',
+  'port',
+  'lines',
+  'profile',
+  'model2',
+  'profile2',
+  'model3',
+  'profile3',
+  'model4',
+  'profile4',
+  'model5',
+  'profile5',
 ]);
 
 function parseArgs(argv: string[]): Args {
@@ -246,6 +257,19 @@ ${b('迁移与导入')}
   wb-switch import-ccswitch         ${g('从 CC Switch 导入 provider 为源')}
   wb-switch ccs                     ${g('只读列出 CC Switch 里的 provider')}
   wb-switch ccswitch --app claude   ${g('筛选 app_type 导入（可逗号分隔多个）')}
+
+${b('网关（同名模型路由）')}
+  wb-switch gateway                 ${g('查看网关状态')}
+  wb-switch gateway start           ${g('后台启动网关（默认端口 7533）')}
+  wb-switch gateway stop            ${g('停止网关')}
+  wb-switch gateway routes          ${g('查看路由表')}
+  wb-switch gateway route add <别名> --profile <源> --model <模型ID> [--profile2 <源> --model2 <模型ID>]
+                                    ${g('添加路由：同名模型多后端，按序失败转移')}
+  wb-switch gateway route remove <别名>  ${g('删除路由')}
+  wb-switch gateway lint            ${g('校验路由表引用')}
+  wb-switch gateway bind [源名]     ${g('生成指向网关的 models.json 源并切换')}
+  wb-switch gateway logs            ${g('查看请求日志（alias → 后端 · 状态 · 耗时）')}
+  wb-switch gateway install         ${g('安装 launchd 开机自启（macOS）')}
 
 ${b('备份与自检')}
   wb-switch backup                 ${g('立即备份当前 models.json（切换时默认不自动备份）')}
@@ -1596,6 +1620,9 @@ async function main(argv: string[]): Promise<number> {
       case 'ccswitch':
       case 'ccs':
         return cmdImportCcSwitch(args);
+      case 'gateway':
+      case 'gw':
+        return await cmdGateway(args);
       default: {
         // 未识别的命令：若恰好是源名，则当作切换
         const r = a2root(args);
