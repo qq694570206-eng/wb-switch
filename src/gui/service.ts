@@ -31,7 +31,6 @@ import {
 import { readSettings, writeSettings } from '../settings.js';
 import { readState, setActive } from '../state.js';
 import { ProfileError } from '../errors.js';
-import { useCombo } from '../appender.js';
 import {
   migrateFromSourcesJson,
   readCcSwitchProviders,
@@ -54,7 +53,9 @@ import {
   addComboMember,
   removeComboMember,
   lintCombo,
+  replaceComboMembers,
 } from '../combo.js';
+import { useCombo, undoAppend } from '../appender.js';
 import { addRoute, readRoutes, removeRoute, validateAlias, type RouteBackend } from '../gateway/routes.js';
 import { getDaemonStatus, startDaemon, stopDaemon, pingGateway } from '../gateway/daemon.js';
 
@@ -618,6 +619,15 @@ export function restoreBackup(fileName: string): { active: string | null; safety
   return { active: res.active, safety };
 }
 
+/** 删除一个备份文件（只删 backups/ 里的归档，不动 models.json） */
+export function deleteBackup(fileName: string): { file: string } {
+  const root = getRoot();
+  const target = path.join(backupsDir(root), path.basename(fileName));
+  if (!exists(target)) throw new Error(`备份文件不存在：${fileName}`);
+  fs.rmSync(target);
+  return { file: path.basename(fileName) };
+}
+
 export function runDoctor(): DoctorReport {
   const root = getRoot();
   const checks: DoctorCheck[] = [];
@@ -1172,4 +1182,19 @@ async function callImageEndpoint(port: number, endpoint: string, payload: Record
     else if (it?.b64_json) images.push({ dataUrl: `data:image/png;base64,${String(it.b64_json)}` });
   }
   return { images };
+}
+
+// ─────────────────────────── 组合：修改 / 撤回追加 ───────────────────────────
+
+/** 整体修改组合成员（编辑模态提交） */
+export function updateComboGui(name: string, members: ComboMemberInput[]): { name: string; memberCount: number } {
+  const root = getRoot();
+  const p = replaceComboMembers(root, name, toComboMembers(members));
+  return { name: p.name, memberCount: p.combo?.length ?? members.length };
+}
+
+/** 撤回一次追加：移除该组合写入 models.json 的条目 + 清理路由 + 出 appended 记录 */
+export function undoAppendGui(name: string): { name: string; removed: string[]; total: number } {
+  const root = getRoot();
+  return undoAppend(name, { configDir: root });
 }

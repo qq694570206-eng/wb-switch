@@ -33,6 +33,7 @@ import {
   removeProfile,
   renameProfileTo,
   restoreBackup,
+  deleteBackup,
   runDoctor,
   saveProfileModels,
   startProtocolProxy,
@@ -71,6 +72,8 @@ import {
   removeImageRoute,
   restartGateway,
   startGateway,
+  updateComboGui,
+  undoAppendGui,
 } from './service.js';
 import type { VendorTemplate } from './templates.js';
 import { listProfileNames } from '../profiles.js';
@@ -403,6 +406,7 @@ function registerIpc(): void {
   );
 
   ipcMain.handle('wb:restore', (_e, file: string) => handle(() => restoreBackup(file)));
+  ipcMain.handle('wb:backupDelete', (_e, file: string) => handle(() => deleteBackup(file)));
 
   ipcMain.handle('wb:doctor', (): Reply<DoctorReport> => handle(() => runDoctor()));
 
@@ -551,6 +555,11 @@ function registerIpc(): void {
   );
   ipcMain.handle('wb:comboDelete', (_e, name: string) => handle(() => deleteCombo(name)));
   ipcMain.handle('wb:comboApply', (_e, name: string) => handle(() => applyCombo(name)));
+  ipcMain.handle(
+    'wb:comboUpdate',
+    (_e, name: string, members: ComboMemberInput[]) => handle(() => updateComboGui(name, members)),
+  );
+  ipcMain.handle('wb:comboUndo', (_e, name: string) => handle(() => undoAppendGui(name)));
 
   // ── 图片模型 ──
   ipcMain.handle('wb:imageOverview', () => handleAsync(() => getImageOverview()));

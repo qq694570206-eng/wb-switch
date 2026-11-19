@@ -142,6 +142,28 @@ run(['add', 'srcDead', '--from', path.join(ROOT, 'models-d.json')]);
   check('state.appended 记录组合', Array.isArray(state.appended) && state.appended.includes('mycombo'));
 }
 
+// ── 3b. 撤回追加（undoAppend）：与追加严格对称 ──
+{
+  const { undoAppend } = await import(path.resolve('dist/appender.js'));
+  const before = JSON.parse(fs.readFileSync(path.join(ROOT, 'models.json'), 'utf8'));
+  check('撤回前 glm-any 存在', before.some(m => m.id === 'glm-any'));
+  const r = undoAppend('mycombo', { configDir: ROOT });
+  check('撤回返回移除的条目', Array.isArray(r.removed) && r.removed.includes('glm-any'), JSON.stringify(r));
+  const after = JSON.parse(fs.readFileSync(path.join(ROOT, 'models.json'), 'utf8'));
+  check('撤回后组合成员已移除', !after.some(m => m.id === 'glm-any'));
+  check('撤回不影响原有源条目（alpha 还在）', after.some(m => m.id === 'alpha'));
+  const st = JSON.parse(fs.readFileSync(path.join(ROOT, 'wb-switch', 'state.json'), 'utf8'));
+  check('撤回后 appended 不再含 mycombo', !(st.appended ?? []).includes('mycombo'));
+  const routes = JSON.parse(fs.readFileSync(path.join(ROOT, 'wb-switch', 'routes.json'), 'utf8'));
+  check('撤回后网关路由里组合 alias 已清理', !routes.routes.some(x => x.alias === 'glm-any'));
+  // 撤回未追加过的名字要报错，不静默成功
+  let threw = false;
+  try { undoAppend('mycombo', { configDir: ROOT }); } catch { threw = true; }
+  check('重复撤回会报错（幂等保护）', threw);
+  // 恢复现场供后续用例使用
+  run(['use', 'mycombo']);
+}
+
 // ── 4. 后续 append 普通源同样追加 ──
 {
   // srcB 有 glm-5.3（与 srcA 的重复）：--on-conflict skip

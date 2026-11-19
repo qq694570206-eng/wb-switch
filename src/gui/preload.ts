@@ -29,6 +29,7 @@ const api = {
   settings: () => ipcRenderer.invoke('wb:settings'),
   saveSettings: (patch: { autoBackup?: boolean }) => ipcRenderer.invoke('wb:saveSettings', patch),
   restore: (file: string) => ipcRenderer.invoke('wb:restore', file),
+  backupDelete: (file: string) => ipcRenderer.invoke('wb:backupDelete', file),
   doctor: () => ipcRenderer.invoke('wb:doctor'),
   fetchModels: (input: { url: string; apiKey: string; timeoutMs?: number; proxyUrl?: string }) =>
     ipcRenderer.invoke('wb:fetchModels', input),
@@ -64,6 +65,8 @@ const api = {
     ipcRenderer.invoke('wb:comboRemoveMember', comboName, alias),
   comboDelete: (name: string) => ipcRenderer.invoke('wb:comboDelete', name),
   comboApply: (name: string) => ipcRenderer.invoke('wb:comboApply', name),
+  comboUpdate: (name: string, members: unknown) => ipcRenderer.invoke('wb:comboUpdate', name, members),
+  comboUndo: (name: string) => ipcRenderer.invoke('wb:comboUndo', name),
   // 图片模型
   imageOverview: () => ipcRenderer.invoke('wb:imageOverview'),
   imageMark: (profile: string, model: string, on: boolean) =>

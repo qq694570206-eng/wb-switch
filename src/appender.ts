@@ -20,8 +20,8 @@ import { assertWritable, exists, isDir } from './fsutil.js';
 import { dataDir, modelsFile, resolveConfigRoot } from './paths.js';
 import { loadModels, saveModels } from './config.js';
 import { loadProfile } from './profiles.js';
-import { appendToState } from './state.js';
-import { mergeComboIntoRoutes, readRoutes } from './gateway/routes.js';
+import { appendToState, readState, removeFromAppended } from './state.js';
+import { mergeComboIntoRoutes, readRoutes, removeAliasesFromRoutes } from './gateway/routes.js';
 
 export type ConflictPolicy = 'error' | 'skip' | 'suffix';
 
@@ -204,4 +204,68 @@ function prepareAppendRoot(root: string): void {
     );
   }
   assertWritable(dataDir(root));
+}
+
+export interface UndoAppendResult {
+  name: string;
+  /** 本次从 models.json 移除的条目 id */
+  removed: string[];
+  /** 移除后 models.json 剩余条目数 */
+  total: number;
+}
+
+/**
+ * 撤回一次追加（组合或普通源）：把该组合/源当时追加进 models.json 的
+ * 条目移除、从 state.appended 里除名，并同步清理网关路由里的组合 alias。
+ *
+ * 与追加对称：
+ *   - useCombo 追加 = 写入 alias 条目 + 合入路由 + state.appended
+ *   - undoAppend   = 移除 alias 条目 + 清理路由 + removeFromAppended
+ * 追加时因冲突被改名（-2/-3）的条目按「原名前缀」一并移除，避免残留。
+ * 磁盘上当前生效的 active 源不受影响。
+ */
+export function undoAppend(name: string, options: AppendOptions = {}): UndoAppendResult {
+  const root = options.configDir ? path.resolve(options.configDir) : resolveConfigRoot();
+  prepareAppendRoot(root);
+
+  const profile = loadProfile(root, name);
+  const state = readState(root);
+  const appendedList = state.appended ?? [];
+  if (!appendedList.includes(name)) {
+    throw new ProfileError(
+      `「${name}」不在追加记录里（state.appended），无法撤回。`,
+      '只有通过「追加」写入的组合/源能撤回；普通切换请直接切换到其它源。',
+    );
+  }
+
+  const target = modelsFile(root);
+  const current = exists(target) ? loadModels(target) : [];
+
+  // 该组合/源负责的模型 id：组合=成员 alias；普通源=其全部模型 id
+  const owned = new Set<string>(
+    profile.type === 'combo' && Array.isArray(profile.combo)
+      ? profile.combo.map(m => m.alias)
+      : profile.models.map(m => m.id),
+  );
+
+  // 因冲突被改名的条目（原名 → 原名-2/-3…）按前缀匹配一并移除
+  const isOwned = (id: string): boolean => {
+    if (owned.has(id)) return true;
+    for (const base of owned) {
+      if (id.startsWith(`${base}-`) && /^-\d+$/.test(id.slice(base.length))) return true;
+    }
+    return false;
+  };
+
+  const kept = current.filter(m => !isOwned(m.id));
+  const removed = current.filter(m => isOwned(m.id)).map(m => m.id);
+  saveModels(target, kept);
+
+  // 同步清理网关路由里的组合 alias（只清组合成员，普通源不占独立 alias）
+  if (profile.type === 'combo' && Array.isArray(profile.combo) && options.syncRoutes !== false) {
+    removeAliasesFromRoutes(root, profile.combo.map(m => m.alias));
+  }
+
+  removeFromAppended(root, name);
+  return { name: profile.name, removed, total: kept.length };
 }

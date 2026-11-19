@@ -295,10 +295,15 @@
           state.selected.clear();
           renderSidebar();
         }
-        if (state.detail?.name === p.name) return;
+        if (state.detail?.name === p.name) {
+          // 已选中但不在「源」页：跳回去，让点击始终有可见反馈
+          if (state.view !== 'sources') setView('sources');
+          return;
+        }
         void guarded(async () => {
           state.detail = await loadDetail(p.name);
           renderAll();
+          if (state.view !== 'sources') setView('sources');
         });
       };
       list.appendChild(btn);
@@ -591,14 +596,36 @@
             <div class="rc-title" title="${esc(b.file)}">${esc(b.file)}</div>
             <div class="rc-sub">${esc(kindLabel[b.kind] || '其它')} · ${esc(fmtTime(b.mtime))} · ${sizeText(b.size)}</div>
           </div>
-          <button class="btn btn-quiet btn-sm" data-restore="${esc(b.file)}">还原</button>
+          <div class="mc-actions">
+            <button class="btn btn-quiet btn-sm" data-restore="${esc(b.file)}">还原</button>
+            <button class="btn btn-danger-quiet btn-sm" data-delbackup="${esc(b.file)}">删除</button>
+          </div>
         </div>`,
       )
       .join('');
     box.onclick = (e) => {
-      const btn = e.target.closest('[data-restore]');
-      if (btn) void doRestore(btn.dataset.restore);
+      const restoreBtn = e.target.closest('[data-restore]');
+      if (restoreBtn) void doRestore(restoreBtn.dataset.restore);
+      const delBtn = e.target.closest('[data-delbackup]');
+      if (delBtn) void doDeleteBackup(delBtn.dataset.delbackup);
     };
+  }
+
+  async function doDeleteBackup(file) {
+    const okToGo = await confirmDialog({
+      title: '删除备份',
+      message: `删除备份「${file}」？`,
+      hint: '只删备份归档，不影响当前 models.json 与现有源。',
+      confirmLabel: '删除',
+      danger: true,
+    });
+    if (!okToGo) return;
+    await guarded(async () => {
+      const r = await call(api.backupDelete(file));
+      await loadBackups();
+      await reload(state.detail?.name);
+      toast('ok', `已删除备份 ${r.file}`);
+    });
   }
 
   async function doRestore(file) {
@@ -2646,15 +2673,18 @@
         </div>`,
           )
           .join('');
+        const appended = c.inSync || (state.overview?.state?.appended || []).includes(c.name);
         return `
       <div class="row-card combo-card" data-name="${esc(c.name)}">
         <div class="rc-main">
-          <div class="rc-title">${esc(c.name)} ${lintHtml}${c.inSync ? '<span class="pill">已追加</span>' : ''}</div>
+          <div class="rc-title">${esc(c.name)} ${lintHtml}${appended ? '<span class="pill">已追加</span>' : ''}</div>
           <div class="rc-sub">${esc(c.description || '')} · ${c.members.length} 个成员 · 聚合 ${c.modelCount} 个模型</div>
           <div class="combo-members">${members}</div>
         </div>
         <div class="combo-actions">
           <button class="btn btn-primary btn-sm combo-apply">追加到当前</button>
+          ${appended ? '<button class="btn btn-quiet btn-sm combo-undo">撤回追加</button>' : ''}
+          <button class="btn btn-quiet btn-sm combo-edit">修改</button>
           <button class="btn btn-quiet btn-sm combo-add">添加成员</button>
           <button class="btn btn-danger-quiet btn-sm combo-del">删除</button>
         </div>
@@ -2672,6 +2702,27 @@
           await loadCombos();
         });
       card.querySelector('.combo-add').onclick = () => openComboAddMemberModal(name);
+      const undoBtn = card.querySelector('.combo-undo');
+      if (undoBtn)
+        undoBtn.onclick = () =>
+          void guarded(async () => {
+            if (
+              !window.confirm(
+                `撤回「${name}」的追加？\n将从 models.json 移除它写入的模型条目、清理对应网关路由，当前源不受影响。`,
+              )
+            )
+              return;
+            const r = await call(api.comboUndo(name));
+            toast(
+              'ok',
+              `已撤回「${r.name}」`,
+              r.removed.length ? `移除 ${r.removed.length} 个条目 · 剩余 ${r.total}` : '没有要移除的条目',
+            );
+            await reload();
+            await loadCombos();
+          });
+      const editBtn = card.querySelector('.combo-edit');
+      if (editBtn) editBtn.onclick = () => openComboEditModal(name);
       card.querySelector('.combo-del').onclick = () =>
         void guarded(async () => {
           if (!window.confirm(`删除组合「${name}」？（已追加进 models.json 的模型不受影响）`)) return;
@@ -2792,6 +2843,77 @@
       wireMemberRow(rows.lastElementChild);
     };
     wireMemberRow(rows.firstElementChild);
+  }
+
+  /** 修改组合：预填现有成员，整体提交（replaceComboMembers） */
+  function openComboEditModal(comboName) {
+    const combo = (comboCache || []).find((c) => c.name === comboName);
+    if (!combo) {
+      toast('err', `找不到组合「${comboName}」`);
+      return;
+    }
+    const profileNames = (state.overview?.profiles || []).map((p) => p.name);
+    const rows = (combo.members || [])
+      .map((m, i) => {
+        const first = (m.sources || [])[0] || {};
+        return `
+        <div class="member-row" data-idx="${i}">
+          <input class="input input-sm mr-alias" value="${esc(m.alias)}" spellcheck="false">
+          <select class="input input-sm mr-profile">
+            ${profileNames.map((n) => `<option value="${esc(n)}"${n === first.profile ? ' selected' : ''}>${esc(n)}</option>`).join('')}
+          </select>
+          <select class="input input-sm mr-model" data-preset="${esc(first.model || '')}"></select>
+          <button class="icon-btn mr-del" title="移除该行">✕</button>
+        </div>`;
+      })
+      .join('');
+    const body = `
+      <div class="form-col">
+        <div class="rc-sub">「${esc(comboName)}」的成员整体覆盖保存；后端链以每行所选的源/模型为准（多后端可在保存后用「添加成员」扩链）</div>
+        <div id="comboMembers">${rows}</div>
+        <button class="btn btn-quiet btn-sm" id="comboAddRow">＋ 添加成员</button>
+      </div>`;
+    openModal({
+      title: `修改组合 · ${comboName}`,
+      body,
+      wide: true,
+      footer: [
+        { label: '取消', className: 'btn btn-quiet', onClick: closeModal },
+        {
+          label: '保存修改',
+          className: 'btn btn-primary',
+          onClick: () =>
+            void guarded(async () => {
+              const members = collectMemberRows($('#comboMembers'));
+              if (!members.length) {
+                toast('err', '至少保留一个完整成员');
+                return;
+              }
+              await call(api.comboUpdate(comboName, members));
+              toast('ok', `组合「${comboName}」已更新`, `${members.length} 个成员`);
+              closeModal();
+              await loadCombos();
+              await reload();
+            }),
+        },
+      ],
+    });
+    const container = $('#comboMembers');
+    container.querySelectorAll('.member-row').forEach((row) => {
+      // 预填每行的模型下拉（等 fillModelSelect 拉完列表后套用 data-preset）
+      const preset = row.querySelector('.mr-model').dataset.preset;
+      row.querySelector('.mr-profile').onchange = () => void fillModelSelect(row);
+      row.querySelector('.mr-del').onclick = () => row.remove();
+      void fillModelSelect(row).then(() => {
+        if (preset && row.querySelector('.mr-model').querySelector(`option[value="${CSS.escape(preset)}"]`)) {
+          row.querySelector('.mr-model').value = preset;
+        }
+      });
+    });
+    $('#comboAddRow').onclick = () => {
+      container.insertAdjacentHTML('beforeend', memberRowHtml(profileNames, container.children.length));
+      wireMemberRow(container.lastElementChild);
+    };
   }
 
   function openComboAddMemberModal(comboName) {

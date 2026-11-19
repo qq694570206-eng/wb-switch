@@ -240,3 +240,26 @@ export function lintCombo(root: string, comboName: string): { alias: string; pro
 export function comboInSync(root: string, combo: Profile, current: ModelEntry[]): boolean {
   return modelsEqual(combo.models, current) || combo.models.every(m => current.some(c => c.id === m.id));
 }
+
+/** 替换组合成员（整体修改）：校验 + 重建 models + 落盘 */
+export function replaceComboMembers(root: string, comboName: string, members: ComboMember[]): Profile {
+  const combo = loadCombo(root, comboName);
+  if (members.length === 0) {
+    throw new UsageError('组合至少需要一个成员。');
+  }
+  const validated = validateMembers(root, members);
+  assertMembersResolvable(root, validated);
+  combo.combo = validated;
+  combo.models = buildComboModels(validated);
+  combo.description = `组合（${validated.length} 个成员）`;
+  saveProfile(root, combo);
+  return combo;
+}
+
+/** 修改组合描述 */
+export function updateComboDescription(root: string, comboName: string, description: string): Profile {
+  const combo = loadCombo(root, comboName);
+  combo.description = description;
+  saveProfile(root, combo);
+  return combo;
+}
