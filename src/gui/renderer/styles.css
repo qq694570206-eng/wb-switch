@@ -1988,3 +1988,40 @@ body.is-busy .btn:not(.icon-btn) {
   line-height: 1.7;
   color: var(--ink-3);
 }
+
+/* ───────────── MCP 接入卡片 ───────────── */
+.mcp-card .rc-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.mcp-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.mcp-dot.ok {
+  background: var(--ok);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 18%, transparent);
+}
+.mcp-dot.bad {
+  background: var(--danger);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 18%, transparent);
+}
+.mcp-name {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--line-soft);
+  color: var(--ink-3);
+}
+.mcp-card .rc-sub {
+  overflow-wrap: anywhere;
+}
+.mc-actions {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+}

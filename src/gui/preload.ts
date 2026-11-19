@@ -73,6 +73,8 @@ const api = {
   imageRouteRemove: (alias: string) => ipcRenderer.invoke('wb:imageRouteRemove', alias),
   imageGen: (input: unknown) => ipcRenderer.invoke('wb:imageGen', input),
   imageEdit: (input: unknown) => ipcRenderer.invoke('wb:imageEdit', input),
+  mcpStatus: () => ipcRenderer.invoke('wb:mcpStatus'),
+  mcpInstall: () => ipcRenderer.invoke('wb:mcpInstall'),
   onTraySwitched: (cb: (name: string) => void) => {
     ipcRenderer.on('wb:tray-switched', (_e, name: string) => cb(name));
   },

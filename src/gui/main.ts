@@ -12,6 +12,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeImage, shell, Tray } from 'electron';
+import { getMcpStatus, installCliFromBundle, installMcpConfig } from './cli-install.js';
 import { WbError } from '../errors.js';
 import {
   composeModelsFromRemote,
@@ -74,53 +75,6 @@ import { listProfileNames } from '../profiles.js';
 import { readState } from '../state.js';
 
 const APP_VERSION = app.getVersion();
-
-/**
- * 把打包内置的自包含 CLI 装进 PATH（幂等）。
- *
- * app.asar 内带 cli/wb-switch（esbuild 打包的单文件、零依赖）。
- * 安装目标按序取第一个已存在且可写的目录：
- *   1. ~/.workbuddy/binaries/node/cli-connector-packages/bin —— WorkBuddy 连接器 bin，在 PATH
- *   2. ~/.workbuddy/bin —— workbuddy 用户 bin（不存在则创建）
- * 安装成功后终端 / MCP 可直接用 `wb-switch` 命令，配置免绝对路径。
- *
- * @returns 安装路径；内置包缺失或所有目标不可写时返回 null
- */
-function installCliFromBundle(): string | null {
-  try {
-    const bundle = path.join(app.getAppPath(), 'cli', 'wb-switch');
-    if (!fs.existsSync(bundle)) return null;
-    const home = app.getPath('home');
-    const dirs = [
-      path.join(home, '.workbuddy/binaries/node/cli-connector-packages/bin'),
-      path.join(home, '.workbuddy/bin'),
-    ];
-    let content: Buffer | null = null;
-    for (const dir of dirs) {
-      try {
-        // 首选目录必须已存在（避免凭空造一个 PATH 外的目录）；兜底目录允许创建
-        if (dir === dirs[0] && !fs.existsSync(dir)) continue;
-        fs.mkdirSync(dir, { recursive: true });
-        fs.accessSync(dir, fs.constants.W_OK);
-        const dest = path.join(dir, 'wb-switch');
-        if (!content) content = fs.readFileSync(bundle);
-        try {
-          if (fs.readFileSync(dest).equals(content)) return dest; // 内容一致，跳过写入
-        } catch {
-          /* 目标不存在，继续安装 */
-        }
-        fs.writeFileSync(dest, content);
-        fs.chmodSync(dest, 0o755);
-        return dest;
-      } catch {
-        /* 目录不可写，试下一个 */
-      }
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
 
 interface Ok<T> {
   ok: true;
@@ -609,6 +563,10 @@ function registerIpc(): void {
   ipcMain.handle('wb:imageRouteRemove', (_e, alias: string) => handle(() => removeImageRoute(alias)));
   ipcMain.handle('wb:imageGen', (_e, input: ImageGenInput) => handleAsync(() => generateImage(input)));
   ipcMain.handle('wb:imageEdit', (_e, input: ImageEditInput) => handleAsync(() => editImage(input)));
+
+  // MCP 接入：状态查询 / 一键写入 mcp.json
+  ipcMain.handle('wb:mcpStatus', () => handle(() => getMcpStatus()));
+  ipcMain.handle('wb:mcpInstall', () => handle(() => installMcpConfig()));
 }
 
 // ─────────────────────────── 生命周期 ───────────────────────────
@@ -634,7 +592,7 @@ if (!gotLock) {
 
   app.whenReady().then(() => {
     app.setAppUserModelId('com.wbswitch.app');
-    const cliPath = installCliFromBundle();
+    const cliPath = installCliFromBundle(path.join(app.getAppPath(), 'cli', 'wb-switch'));
     if (cliPath) console.log(`[wb-switch] 命令行工具已就绪：${cliPath}`);
     buildMenu();
     registerIpc();

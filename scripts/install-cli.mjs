@@ -70,6 +70,16 @@ fs.copyFileSync(`${entry}.bundle.tmp.js`, dest);
 fs.rmSync(`${entry}.bundle.tmp.js`, { force: true });
 fs.chmodSync(dest, 0o755);
 
+// MCP 启动器：MCP 子进程不继承终端 PATH，由它自行定位 node 再执行上面的单文件 CLI
+const launcherSrc = path.join(repoRoot, 'assets', 'wb-switch-mcp.sh');
+if (fs.existsSync(launcherSrc)) {
+  const launcher = path.join(targetDir, 'wb-switch-mcp');
+  fs.copyFileSync(launcherSrc, launcher);
+  fs.chmodSync(launcher, 0o755);
+  console.log(`已安装：${launcher}`);
+  console.log(`MCP 配置：{"command":"${launcher}","args":["mcp"]}`);
+}
+
 console.log(`已安装：${dest}`);
 // PATH 校验
 const inPath = process.env.PATH?.split(path.delimiter).includes(targetDir);

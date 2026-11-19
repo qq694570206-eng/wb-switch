@@ -23,6 +23,7 @@ import path from 'node:path';
 import { getDaemonStatus, startDaemon, pingGateway } from './gateway/daemon.js';
 import { readRoutes } from './gateway/routes.js';
 import { resolveConfigRoot } from './paths.js';
+import { VERSION } from './version.js';
 
 interface JsonRpcRequest {
   jsonrpc: '2.0';
@@ -286,7 +287,7 @@ async function dispatch(line: string, root: string): Promise<void> {
       writeResult(id, {
         protocolVersion: '2024-11-05',
         capabilities: { tools: {} },
-        serverInfo: { name: 'wb-switch-mcp', version: '2.1.0' },
+        serverInfo: { name: 'wb-switch-mcp', version: VERSION },
       });
       return;
     case 'notifications/initialized':

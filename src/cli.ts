@@ -88,7 +88,7 @@ import {
   warn,
 } from './ui.js';
 
-const VERSION = '2.2.0';
+import { VERSION } from './version.js';
 
 /** 超过这个模型数，切换时给出醒目提醒（不硬拦，只提醒） */
 const MODEL_COUNT_WARN = 50;

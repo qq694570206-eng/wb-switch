@@ -2263,6 +2263,26 @@
     $('#btnComboRefresh').onclick = () => void loadCombos();
     $('#btnComboNew').onclick = () => openComboNewModal();
     $('#btnImageRefresh').onclick = () => void loadImage();
+    $('#btnMcpInstall').onclick = () => {
+      void guarded(async () => {
+        mcpCache = await call(api.mcpInstall());
+        renderMcpCard();
+        toast(
+          'ok',
+          'MCP 配置已写入',
+          '重启 WorkBuddy（或重新加载 MCP）后即可在工具列表看到 wb-switch-image',
+        );
+      });
+    };
+    $('#btnMcpCopy').onclick = () => {
+      const s = mcpCache;
+      const snippet = JSON.stringify(
+        { mcpServers: { 'wb-switch-image': { command: s?.launcherPath || '<launcher>', args: ['mcp'] } } },
+        null,
+        2,
+      );
+      void call(api.copy(snippet)).then(() => toast('ok', 'MCP 配置已复制到剪贴板'));
+    };
     $('#btnImageMark').onclick = () => openImageMarkModal();
     $('#btnImageRouteNew').onclick = () => openImageRouteModal();
     $('#btnImageGen').onclick = () => void guarded(doGenerate);
@@ -2784,6 +2804,35 @@
   // ───────────────────────── 图片模型 ─────────────────────────
 
   let imageCache = null;
+  let mcpCache = null;
+
+  /** 渲染 MCP 接入状态卡片（连不上时的自检与一键修复入口） */
+  function renderMcpCard() {
+    const title = $('#mcpTitle');
+    const sub = $('#mcpSub');
+    if (!title || !sub) return;
+    const s = mcpCache;
+    if (!s) {
+      title.textContent = '检查中…';
+      sub.textContent = '正在读取 mcp.json 与启动器状态';
+      return;
+    }
+    title.innerHTML =
+      `<span class="mcp-dot ${s.ok ? 'ok' : 'bad'}"></span>` +
+      (s.ok ? 'MCP 配置正常' : 'MCP 未就绪') +
+      '<span class="mcp-name">wb-switch-image</span>';
+    sub.textContent = `${s.hint} · 启动器：${s.launcherPath}`;
+  }
+
+  async function loadMcp() {
+    try {
+      mcpCache = await call(api.mcpStatus());
+      renderMcpCard();
+    } catch (err) {
+      const sub = $('#mcpSub');
+      if (sub) sub.textContent = `读取失败：${err?.message || err}`;
+    }
+  }
 
   async function loadImage() {
     try {
@@ -2792,6 +2841,7 @@
     } catch (err) {
       reportError(err);
     }
+    void loadMcp();
   }
 
   function renderImage() {

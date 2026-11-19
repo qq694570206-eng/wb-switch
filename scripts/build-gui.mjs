@@ -49,6 +49,7 @@ await esbuild.build({
   format: 'cjs',
   target: 'node20',
   external: ['electron'],
+  loader: { '.sh': 'text' }, // MCP 启动器脚本以字符串形式打进 main.cjs
   sourcemap: false,
   minify: false,
   logLevel: 'warning',
