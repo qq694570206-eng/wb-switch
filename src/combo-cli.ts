@@ -43,7 +43,7 @@ function jsonOut(value: unknown): void {
 }
 
 /** 解析一组成员（create/add 共用）：--alias 可选，fallback 链同 gateway route add */
-export function parseMembersFromArgs(args: Args): ComboMember[] {
+export function parseMembersFromArgs(args: Args, comboName?: string): ComboMember[] {
   const groups: { profile?: string; model?: string }[] = [
     { profile: str(args, 'profile'), model: str(args, 'model') },
   ];
@@ -61,8 +61,9 @@ export function parseMembersFromArgs(args: Args): ComboMember[] {
     }
     sources.push({ profile: g.profile, model: g.model });
   }
-  // alias 缺省取第一个模型 ID
-  return [{ alias: alias ?? sources[0]!.model, sources }];
+  // alias 缺省 = 组合名-模型名（加前缀防与源里的同名模型混淆；无组合名时退回模型 ID）
+  const fallback = comboName ? `${comboName}-${sources[0]!.model}` : sources[0]!.model;
+  return [{ alias: alias ?? fallback, sources }];
 }
 
 export function cmdCombo(args: Args): number | Promise<number> {
@@ -103,7 +104,7 @@ function cmdCreate(args: Args, root: string): Promise<number> {
 
   let members: ComboMember[];
   try {
-    members = parseMembersFromArgs(args);
+    members = parseMembersFromArgs(args, name);
   } catch {
     return Promise.resolve(2);
   }
@@ -191,7 +192,7 @@ async function cmdAddMember(args: Args, root: string): Promise<number> {
   }
   let members: ComboMember[];
   try {
-    members = parseMembersFromArgs(args);
+    members = parseMembersFromArgs(args, comboName);
   } catch {
     return Promise.resolve(2);
   }

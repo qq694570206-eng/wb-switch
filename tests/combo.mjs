@@ -124,6 +124,23 @@ run(['add', 'srcDead', '--from', path.join(ROOT, 'models-d.json')]);
   check('组合内别名重复 → 报错', out3.includes('已存在别名') || out3.includes('别名重复'));
 }
 
+// ── 2b. 缺省别名自动带「组合名-」前缀 ──
+{
+  run(['combo', 'create', 'prefixed', '--no-test', '--profile', 'srcB', '--model', 'beta']);
+  let f = JSON.parse(fs.readFileSync(path.join(ROOT, 'wb-switch', 'profiles', 'prefixed.json'), 'utf8'));
+  check('create 缺省 alias 带前缀（prefixed-beta）', f.combo.some(m => m.alias === 'prefixed-beta'));
+
+  run(['combo', 'add', 'prefixed', '--no-test', '--profile', 'srcA', '--model', 'alpha']);
+  f = JSON.parse(fs.readFileSync(path.join(ROOT, 'wb-switch', 'profiles', 'prefixed.json'), 'utf8'));
+  check('add 缺省 alias 带前缀（prefixed-alpha）', f.combo.some(m => m.alias === 'prefixed-alpha'));
+
+  run(['combo', 'add', 'prefixed', '--no-test', '--profile', 'srcA', '--model', 'alpha', '--alias', 'plain-name']);
+  f = JSON.parse(fs.readFileSync(path.join(ROOT, 'wb-switch', 'profiles', 'prefixed.json'), 'utf8'));
+  check('显式 --alias 尊重用户（不加前缀）', f.combo.some(m => m.alias === 'plain-name'));
+
+  run(['combo', 'remove', 'prefixed']);
+}
+
 // ── 3. use <组合> = 追加模式 ──
 {
   const out = run(['use', 'mycombo']);

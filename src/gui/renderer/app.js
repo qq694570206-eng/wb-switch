@@ -2751,15 +2751,21 @@
           ? `<span class="pill warn" title="${esc(problems.map((p) => `${p.alias}: ${p.problems.join('; ')}`).join('\n'))}">${problems.length} 个问题</span>`
           : '';
         const members = (c.members || [])
-          .map(
-            (m, i) => `
+          .map((m, i) => {
+            // 别名以「组合名-」开头时拆开展示：前缀弱化、模型名部分正常
+            const prefix = `${c.name}-`;
+            const isPrefixed = m.alias.startsWith(prefix);
+            const aliasHtml = isPrefixed
+              ? `<span class="mono combo-alias"><span class="combo-alias-prefix">${esc(prefix)}</span>${esc(m.alias.slice(prefix.length))}</span>`
+              : `<span class="mono">${esc(m.alias)}</span>`;
+            return `
         <div class="combo-member" data-alias="${esc(m.alias)}">
           <span class="combo-idx">${i + 1}</span>
-          <span class="mono">${esc(m.alias)}</span>
+          ${aliasHtml}
           <span class="dim">← ${esc((m.sources || []).map((s) => `${s.profile}/${s.model}`).join(' → '))}</span>
           <button class="icon-btn combo-del-member" title="移除成员">✕</button>
-        </div>`,
-          )
+        </div>`;
+          })
           .join('');
         const appended = c.inSync || (state.overview?.state?.appended || []).includes(c.name);
         return `
@@ -2846,6 +2852,16 @@
     </div>`;
   }
 
+  /**
+   * 组合成员别名 = 组合名-模型名（防与普通源里的同名模型混淆）。
+   * 别名输入框为空且未被手改过时，选完模型自动带前缀填好；用户手改则以手改为准。
+   */
+  function autoAliasForModel(row, prefix, model) {
+    const aliasEl = row.querySelector('.mr-alias');
+    if (!aliasEl || aliasEl.dataset.touched === '1') return;
+    aliasEl.value = model ? `${prefix}-${model}` : '';
+  }
+
   async function fillModelSelect(row) {
     const profileSel = row.querySelector('.mr-profile');
     const modelSel = row.querySelector('.mr-model');
@@ -2858,12 +2874,26 @@
     }
   }
 
-  function wireMemberRow(row, onChange) {
+  function wireMemberRow(row, onChange, aliasPrefix) {
     row.querySelector('.mr-profile').onchange = () => void fillModelSelect(row);
     row.querySelector('.mr-del').onclick = () => {
       row.remove();
       if (onChange) onChange();
     };
+    // 别名被手改后不再自动覆盖
+    const aliasEl = row.querySelector('.mr-alias');
+    if (aliasEl) {
+      aliasEl.addEventListener('input', () => {
+        aliasEl.dataset.touched = '1';
+      });
+    }
+    // 选完模型自动填「前缀-模型名」别名（未手改时）
+    if (aliasPrefix) {
+      const modelSel = row.querySelector('.mr-model');
+      modelSel.addEventListener('change', () => {
+        autoAliasForModel(row, aliasPrefix, modelSel.value);
+      });
+    }
     void fillModelSelect(row);
   }
 
@@ -2888,6 +2918,7 @@
       <div class="form-col">
         <label class="form-label">组合名（WorkBuddy 里的源名，需唯一）</label>
         <input class="input" id="comboName" placeholder="例：mymix" spellcheck="false">
+        <div class="rc-sub">成员别名会自动带上「组合名-」前缀（如 mymix-glm-5.3），避免与源里的同名模型混淆；可手动修改。</div>
         <label class="form-label">成员（按序 fallback：前面的失败重试后切下一个）</label>
         <div id="comboMembers">${memberRowHtml(profileNames, 0)}</div>
         <button class="btn btn-quiet btn-sm" id="comboAddRow">＋ 添加成员</button>
@@ -2899,7 +2930,11 @@
       body,
       wide: true,
       footer: [
-        { label: '取消', className: 'btn btn-quiet', onClick: closeModal },
+        {
+          label: '取消',
+          className: 'btn btn-quiet',
+          onClick: closeModal,
+        },
         {
           label: '创建组合',
           className: 'btn btn-primary',
@@ -2926,11 +2961,22 @@
       ],
     });
     const rows = $('#comboMembers');
+    const nameEl = $('#comboName');
+    /** 组合名变化时刷新未手改行的别名前缀 */
+    const refreshPrefixes = () => {
+      const prefix = nameEl.value.trim().replace(/\s+/g, '-');
+      for (const row of rows.querySelectorAll('.member-row')) {
+        const model = row.querySelector('.mr-model')?.value || '';
+        autoAliasForModel(row, prefix, model);
+      }
+    };
+    nameEl.addEventListener('input', refreshPrefixes);
     $('#comboAddRow').onclick = () => {
       rows.insertAdjacentHTML('beforeend', memberRowHtml(profileNames, rows.children.length));
-      wireMemberRow(rows.lastElementChild);
+      const prefix = nameEl.value.trim().replace(/\s+/g, '-');
+      wireMemberRow(rows.lastElementChild, null, prefix);
     };
-    wireMemberRow(rows.firstElementChild);
+    wireMemberRow(rows.firstElementChild, null, nameEl.value.trim().replace(/\s+/g, '-'));
   }
 
   /** 修改组合：预填现有成员，整体提交（replaceComboMembers） */
@@ -3000,7 +3046,7 @@
     });
     $('#comboAddRow').onclick = () => {
       container.insertAdjacentHTML('beforeend', memberRowHtml(profileNames, container.children.length));
-      wireMemberRow(container.lastElementChild);
+      wireMemberRow(container.lastElementChild, null, comboName);
     };
   }
 
@@ -3008,7 +3054,7 @@
     const profileNames = (state.overview?.profiles || []).map((p) => p.name);
     const body = `
       <div class="form-col">
-        <div class="rc-sub">往「${esc(comboName)}」追加一个成员（别名须组合内唯一）</div>
+        <div class="rc-sub">往「${esc(comboName)}」追加一个成员（别名须组合内唯一）。别名会自动带上「${esc(comboName)}-」前缀，可手动修改。</div>
         ${memberRowHtml(profileNames, 0)}
       </div>`;
     openModal({
@@ -3036,7 +3082,7 @@
         },
       ],
     });
-    wireMemberRow($('#modalBody').querySelector('.member-row'));
+    wireMemberRow($('#modalBody').querySelector('.member-row'), null, comboName);
   }
 
   // ───────────────────────── 图片模型 ─────────────────────────

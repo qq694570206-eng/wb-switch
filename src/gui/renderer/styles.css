@@ -1822,6 +1822,12 @@ body.is-busy .btn:not(.icon-btn) {
   text-align: center;
   font-weight: 700;
 }
+/* 带前缀的成员别名：前缀部分弱化，突出模型名本身 */
+.combo-alias-prefix {
+  color: var(--ink-3);
+  font-weight: 400;
+  opacity: 0.75;
+}
 .combo-actions {
   display: flex;
   flex-direction: column;
