@@ -16,7 +16,18 @@ import type { ComboMember, ModelEntry, Profile, ProfileSummary, SwitchState } fr
 import { startProxy, type ProtocolKind, type ProxyModelConfig } from './proxy.js';
 import { hostOf, loadModels, modelsEqual, validateModels } from '../config.js';
 import { backupFile, exists, isDir, listFiles } from '../fsutil.js';
-import { backupsDir, dataDir, modelsFile, profilesDir, resolveConfigRoot } from '../paths.js';
+import { backupsDir, dataDir, modelsFile, profilesDir, resolveConfigRoot, getActiveTargetId, setActiveTarget, wbSwitchHome } from '../paths.js';
+import {
+  createTargets,
+  getTarget as getTargetById,
+  listTargets,
+  readCurrentTarget,
+  writeCurrentTarget,
+  TARGET_IDS,
+  type TargetAdapter,
+  type TargetId,
+  type TargetInfo,
+} from '../targets/index.js';
 import {
   deleteProfile,
   listProfileNames,
@@ -109,6 +120,8 @@ export interface Overview {
   state: SwitchState;
   backupCount: number;
   appVersion: string;
+  /** 当前目标工具（WorkBuddy / Codex …） */
+  target: TargetInfo & { current: string };
 }
 
 export interface BackupView {
@@ -139,6 +152,8 @@ export interface SwitchReport {
   modelCount: number;
   previousModelCount: number;
   updatedAt: string | null;
+  /** 目标工具给出的额外说明（如 Codex 生成了几个 profile） */
+  notes?: string[];
 }
 
 /** 统一把异常转成可直接展示的字符串 */
@@ -148,6 +163,27 @@ function errText(err: unknown): string {
 
 export function getRoot(): string {
   return resolveConfigRoot();
+}
+
+/** 当前目标工具的适配器（WorkBuddy / Codex …） */
+export function getTarget(): TargetAdapter {
+  return getTargetById(getActiveTargetId(), { workbuddyRoot: getRoot() });
+}
+
+/** 当前目标是哪个工具 */
+export function getTargetInfo(): TargetInfo {
+  return getTarget().describe();
+}
+
+/** 读取「当前目标工具」配置里生效的模型（按各工具的格式解析） */
+function readCurrentModelsForTarget(root: string): ModelEntry[] | null {
+  const t = getTarget();
+  if (t.id === 'workbuddy') return readCurrentModels(root);
+  try {
+    return t.readModels();
+  } catch {
+    return null;
+  }
 }
 
 export function toModelView(m: ModelEntry): ModelView {
@@ -265,18 +301,24 @@ export function listBackups(root = getRoot()): BackupView[] {
 
 export function getOverview(appVersion = '1.0.0'): Overview {
   const root = getRoot();
-  const rootExists = isDir(root);
-  const mFile = modelsFile(root);
+  const targetInfo = getTargetInfo();
+  const targetId = getActiveTargetId();
+
+  // 配置文件位置与存在性按目标工具决定（WorkBuddy 是 models.json，Codex 是 config.toml）
+  const isWorkbuddy = targetId === 'workbuddy';
+  const mFile = isWorkbuddy ? modelsFile(root) : targetInfo.configPath;
+  const rootExists = isWorkbuddy ? isDir(root) : targetInfo.installed;
 
   let currentModels: ModelView[] | null = null;
   let currentError: string | null = null;
   if (!rootExists) {
-    currentError = `配置目录不存在：${root}`;
+    currentError = `${targetInfo.name} 配置目录不存在：${targetInfo.configPath}`;
   } else if (!exists(mFile)) {
     currentError = null;
   } else {
     try {
-      currentModels = readCurrentModels(root)!.map(toModelView);
+      const models = readCurrentModelsForTarget(root);
+      currentModels = models ? models.map(toModelView) : null;
     } catch (err) {
       currentError = errText(err);
     }
@@ -310,14 +352,41 @@ export function getOverview(appVersion = '1.0.0'): Overview {
     state,
     backupCount: rootExists ? listBackups(root).length : 0,
     appVersion,
+    target: { ...targetInfo, current: targetId },
   };
+}
+
+/** 列出全部目标工具（供侧栏切换器） */
+export function listTargetTools(): { current: string; targets: (TargetInfo & { current: boolean })[] } {
+  const current = readCurrentTarget(wbSwitchHome());
+  const infos = listTargets({ workbuddyRoot: getRoot() });
+  return {
+    current,
+    targets: infos.map((t) => ({ ...t, current: t.id === current })),
+  };
+}
+
+/**
+ * 切换目标工具（持久生效）。
+ *
+ * 切换后「当前目标」变了，源库与配置文件都跟着变，
+ * 所以调用方必须重新拉一次 overview 刷新整页。
+ */
+export function switchTargetTool(id: string): { current: string; name: string; configPath: string } {
+  if (!TARGET_IDS.includes(id as TargetId)) {
+    throw new Error(`未知目标工具「${id}」。可用：${TARGET_IDS.join('、')}`);
+  }
+  writeCurrentTarget(wbSwitchHome(), id as TargetId);
+  setActiveTarget(id);
+  const t = getTarget();
+  return { current: id, name: t.name, configPath: t.configPath() };
 }
 
 export function getProfile(nameOrQuery: string): ProfileDetail {
   const root = getRoot();
   const realName = resolveProfileName(root, nameOrQuery);
   const p = loadProfile(root, realName);
-  const current = readCurrentModels(root);
+  const current = readCurrentModelsForTarget(root);
   const state = readState(root);
   return {
     name: p.name,
@@ -335,6 +404,27 @@ export function getProfile(nameOrQuery: string): ProfileDetail {
 export function switchProfile(nameOrQuery: string, force = false): SwitchReport {
   const root = getRoot();
   prepareRoot(root);
+
+  // 非 WorkBuddy 目标（如 Codex）：交给适配器按它自己的格式写入
+  const target = getTarget();
+  if (target.id !== 'workbuddy') {
+    const profile = loadProfile(root, nameOrQuery);
+    if (!profile.models.length) {
+      throw new Error(`源「${profile.name}」是空的，切换后目标工具将没有可用模型。`);
+    }
+    const prev = readCurrentModelsForTarget(root);
+    const res = target.writeModels(profile.models);
+    setActive(root, profile.name, readState(root).lastBackup ?? null);
+    return {
+      name: profile.name,
+      identical: false,
+      backup: null,
+      modelCount: res.modelCount,
+      previousModelCount: prev?.length ?? 0,
+      updatedAt: new Date().toISOString(),
+      notes: res.notes,
+    };
+  }
 
   // 组合分流：组合的「切换」= 追加模式（不覆盖当前源）
   try {
@@ -453,9 +543,9 @@ export function suggestConnection(profileName?: string): ConnectionSuggestion | 
   }
 
   try {
-    const cur = readCurrentModels(root);
+    const cur = readCurrentModelsForTarget(root);
     if (cur) {
-      const hit = pick(cur, '当前 models.json');
+      const hit = pick(cur, '当前配置');
       if (hit) return hit;
     }
   } catch {
@@ -928,7 +1018,7 @@ export interface ComboView {
 export function listCombos(): ComboView[] {
   const root = getRoot();
   const out: ComboView[] = [];
-  const current = readCurrentModels(root);
+  const current = readCurrentModelsForTarget(root);
   for (const n of listComboNames(root)) {
     try {
       const p = loadCombo(root, n);

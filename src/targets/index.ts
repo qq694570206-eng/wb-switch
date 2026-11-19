@@ -8,6 +8,8 @@ import type { TargetAdapter, TargetInfo } from './types.js';
 import { WorkBuddyTarget } from './workbuddy.js';
 import { CodexTarget } from './codex.js';
 
+export type { TargetAdapter, TargetInfo, ApplyResult } from './types.js';
+
 export type TargetId = 'workbuddy' | 'codex';
 
 /** 全部已支持的 target id（顺序即优先级） */

@@ -22,6 +22,8 @@ import {
   exportProfile,
   fetchRemoteModels,
   getOverview,
+  listTargetTools,
+  switchTargetTool,
   getProfile,
   getRoot,
   importProfile,
@@ -366,6 +368,12 @@ function showMainWindow(): void {
 
 function registerIpc(): void {
   ipcMain.handle('wb:overview', (): Reply<Overview> => handle(() => getOverview(APP_VERSION)));
+
+  // 目标工具（WorkBuddy / Codex）切换
+  ipcMain.handle('wb:targets', () => handle(() => listTargetTools()));
+  ipcMain.handle('wb:switchTarget', (_e, id: string) =>
+    handle(() => switchTargetTool(id)),
+  );
 
   ipcMain.handle('wb:profile', (_e, name: string): Reply<ProfileDetail> =>
     handle(() => getProfile(name)),

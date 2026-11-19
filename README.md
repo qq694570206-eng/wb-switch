@@ -177,6 +177,11 @@ wb-switch 现在是一个**通用模型切换工具**，同一套「源 / 组合
 | **WorkBuddy** | `~/.workbuddy/models.json` | JSON 数组 | chat |
 | **Codex** | `~/.codex/config.toml` | TOML | responses |
 
+**界面里切换**：左侧栏顶部的「目标工具」下拉，点一下即可在 WorkBuddy / Codex 之间来回切。
+切换后源列表、当前生效、备份都会跟着换到那个工具的视图（各自独立，互不影响）。
+
+命令行也可以：
+
 ```bash
 wb-switch targets              # 查看全部目标工具与当前项
 wb-switch targets use codex    # 切到 Codex

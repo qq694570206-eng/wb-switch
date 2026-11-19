@@ -15,6 +15,9 @@ export interface Reply<T> {
 
 const api = {
   overview: () => ipcRenderer.invoke('wb:overview'),
+  // 目标工具（WorkBuddy / Codex）切换
+  targets: () => ipcRenderer.invoke('wb:targets'),
+  switchTarget: (id: string) => ipcRenderer.invoke('wb:switchTarget', id),
   profile: (name: string) => ipcRenderer.invoke('wb:profile', name),
   switchTo: (name: string, force = false) => ipcRenderer.invoke('wb:switch', name, force),
   createFromCurrent: (name: string, description?: string) =>

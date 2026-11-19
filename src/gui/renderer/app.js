@@ -488,10 +488,81 @@
   function renderAll() {
     renderBanner();
     renderEffective();
+    renderTargetSwitcher();
     renderSidebar();
     renderDetail();
     $('#statusPath').textContent = `${state.overview.configRoot}`;
     $('#statusVersion').textContent = `v${state.overview.appVersion}`;
+  }
+
+  // ───────────────────── 目标工具切换器（WorkBuddy / Codex） ─────────────────────
+
+  /** 目标工具列表缓存（切换后重新拉） */
+  let targetListCache = null;
+
+  function renderTargetSwitcher() {
+    const o = state.overview;
+    if (!o?.target) return;
+    $('#targetName').textContent = o.target.name;
+    const dot = $('#targetDot');
+    // 未安装的工具用警示色提示
+    dot.style.background = o.target.installed ? 'var(--ok)' : 'var(--warn)';
+    dot.style.boxShadow = o.target.installed
+      ? '0 0 0 3px var(--ok-soft)'
+      : '0 0 0 3px var(--warn-soft)';
+    // 标题上给出配置文件路径，鼠标悬停即可确认切的是哪个文件
+    $('#targetBtn').title = `当前：${o.target.name}\n配置文件：${o.target.configPath}`;
+  }
+
+  async function openTargetMenu() {
+    const menu = $('#targetMenu');
+    const btn = $('#targetBtn');
+    if (!menu.hidden) {
+      menu.hidden = true;
+      btn.setAttribute('aria-expanded', 'false');
+      return;
+    }
+    try {
+      targetListCache = await call(api.targets());
+    } catch (err) {
+      toast('err', '读取目标工具失败', err.message);
+      return;
+    }
+    menu.innerHTML = targetListCache.targets
+      .map((t) => {
+        const badge = t.installed ? '' : '<span class="target-item-badge">未安装</span>';
+        return `
+          <button class="target-item${t.current ? ' is-current' : ''}" role="option"
+                  aria-selected="${t.current}" data-target="${esc(t.id)}">
+            <span class="target-item-mark">${t.current ? '✓' : ''}</span>
+            <span class="target-item-body">
+              <span class="target-item-name">${esc(t.name)}${badge}</span>
+              <span class="target-item-path">${esc(t.configPath)}</span>
+            </span>
+          </button>`;
+      })
+      .join('');
+    menu.hidden = false;
+    btn.setAttribute('aria-expanded', 'true');
+    menu.querySelectorAll('[data-target]').forEach((el) => {
+      el.addEventListener('click', () => {
+        menu.hidden = true;
+        btn.setAttribute('aria-expanded', 'false');
+        if (el.dataset.target && el.dataset.target !== state.overview.target.current) {
+          doSwitchTarget(el.dataset.target);
+        }
+      });
+    });
+  }
+
+  async function doSwitchTarget(id) {
+    await guarded(async () => {
+      const res = await call(api.switchTarget(id));
+      toast('ok', `已切换到 ${res.name}`, res.configPath);
+      // 目标变了 → 源库/配置文件全变，清掉详情并整页重载
+      state.detail = null;
+      await reload();
+    });
   }
 
   /**
@@ -517,15 +588,17 @@
     const activeName = o.state?.active || null;
     const activeProfile = o.profiles.find((p) => p.name === activeName && p.inSync);
     const anySyncProfile = o.profiles.find((p) => p.inSync);
+    // 文案跟着目标工具走：WorkBuddy 说 models.json，Codex 说 config.toml
+    const cfgName = o.target?.id === 'workbuddy' ? 'models.json' : (o.target?.name || '配置');
 
     if (o.currentError) {
       tone = 'err';
-      title = 'models.json 解析失败';
+      title = `${cfgName} 解析失败`;
       desc = `${o.currentError} · 切换任意源会覆盖这个文件（覆盖前自动备份）`;
     } else if (!o.hasModels || o.currentModels === null) {
       tone = 'err';
       title = '磁盘上还没有生效的模型配置';
-      desc = 'models.json 不存在或为空，点任意源里的「切换到此源」生成它';
+      desc = `${cfgName} 不存在或为空，点任意源里的「切换到此源」生成它`;
     } else if (activeName && activeProfile) {
       tone = 'ok';
       title = `已生效：「${activeName}」`;
@@ -536,7 +609,7 @@
       desc = '重新切换一次即可对齐；不影响实际使用';
     } else if (activeName) {
       tone = 'warn';
-      title = `「${activeName}」生效后，models.json 又被改过`;
+      title = `「${activeName}」生效后，${cfgName} 又被改过`;
       desc = `当前磁盘 ${o.currentModels.length} 个模型，与源库内容不一致；重新切换可恢复`;
     } else if (anySyncProfile) {
       tone = 'warn';
@@ -2349,6 +2422,26 @@
   // ───────────────────────── 事件绑定 ─────────────────────────
 
   function bind() {
+    // 目标工具切换器（WorkBuddy / Codex）
+    $('#targetBtn').onclick = () => void openTargetMenu();
+    // 点菜单外部关闭
+    document.addEventListener('click', (e) => {
+      const sw = $('#targetSwitcher');
+      const menu = $('#targetMenu');
+      if (!sw || !menu || menu.hidden) return;
+      if (!sw.contains(e.target)) {
+        menu.hidden = true;
+        $('#targetBtn').setAttribute('aria-expanded', 'false');
+      }
+    });
+    document.addEventListener('keydown', (e) => {
+      const menu = $('#targetMenu');
+      if (e.key === 'Escape' && menu && !menu.hidden) {
+        menu.hidden = true;
+        $('#targetBtn').setAttribute('aria-expanded', 'false');
+      }
+    });
+
     $('#btnNew').onclick = () => openNewModal('template');
     $('#btnSnapshot').onclick = () => openNewModal('snapshot');
     $('#emptySnapshot').onclick = () => openNewModal('snapshot');
