@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:;"
     />
     <title>wb-switch · WorkBuddy 模型源切换</title>
     <link rel="stylesheet" href="styles.css" />
@@ -72,6 +72,8 @@
           <button class="tab-btn" data-view="backups">
             备份<span class="pill" id="backupBadge">0</span>
           </button>
+          <button class="tab-btn" data-view="combos">模型组</button>
+          <button class="tab-btn" data-view="image">图片</button>
           <button class="tab-btn" data-view="doctor">自检</button>
           <button class="tab-btn" data-view="import">导入</button>
         </div>
@@ -182,6 +184,61 @@
           </div>
 
           <div id="importResult"></div>
+        </section>
+
+        <section class="view" id="view-combos" hidden>
+          <header class="page-head">
+            <div>
+              <h1>模型组（组合）</h1>
+              <p class="page-sub">把多个源的模型聚合成一个「独立源」；点「追加到当前」不覆盖现有模型，直接并进 WorkBuddy</p>
+            </div>
+            <div class="detail-actions">
+              <button class="btn btn-quiet" id="btnComboRefresh">刷新</button>
+              <button class="btn btn-primary" id="btnComboNew">新建组合</button>
+            </div>
+          </header>
+          <div id="comboList" class="stack"></div>
+        </section>
+
+        <section class="view" id="view-image" hidden>
+          <header class="page-head">
+            <div>
+              <h1>图片模型</h1>
+              <p class="page-sub">SenseNova U1.5 等 · 标记图片模型 → 配路由（多源 fallback）→ 生图（走网关）</p>
+            </div>
+            <div class="detail-actions">
+              <button class="btn btn-quiet" id="btnImageRefresh">刷新</button>
+              <button class="btn btn-quiet" id="btnImageMark">标记图片模型</button>
+              <button class="btn btn-primary" id="btnImageRouteNew">新建图片路由</button>
+            </div>
+          </header>
+
+          <div class="section-head"><h2>图片路由 <span class="count" id="imgRouteCount">0</span></h2></div>
+          <div id="imageRouteList" class="stack"></div>
+
+          <div class="section-head"><h2>已标记的图片模型 <span class="count" id="imgModelCount">0</span></h2></div>
+          <div id="imageModelList" class="stack"></div>
+
+          <div class="section-head"><h2>试一张</h2></div>
+          <div class="row-card image-gen-card">
+            <div class="image-gen-row">
+              <select class="input input-sm" id="genAlias" title="图片路由"></select>
+              <input class="input input-sm" id="genPrompt" placeholder="描述你想画的画面，例：一只白色海豹宝宝漂浮海面" spellcheck="false" />
+              <button class="btn btn-primary" id="btnImageGen">生成</button>
+            </div>
+            <div class="image-gen-opts">
+              <label>尺寸 <select class="input input-sm" id="genSize">
+                <option value="">默认</option>
+                <option>1024x1024</option>
+                <option>768x1024</option>
+                <option>1024x768</option>
+                <option>512x512</option>
+              </select></label>
+              <label><input type="checkbox" id="genNoWatermark" /> 去水印</label>
+              <span class="dim" id="genStatus"></span>
+            </div>
+            <div id="genResult" class="image-gen-result" hidden></div>
+          </div>
         </section>
 
         <footer class="statusbar">

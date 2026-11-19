@@ -12,7 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describeError } from '../errors.js';
-import type { ModelEntry, Profile, ProfileSummary, SwitchState } from '../types.js';
+import type { ComboMember, ModelEntry, Profile, ProfileSummary, SwitchState } from '../types.js';
 import { startProxy, type ProtocolKind, type ProxyModelConfig } from './proxy.js';
 import { hostOf, loadModels, modelsEqual, validateModels } from '../config.js';
 import { backupFile, exists, isDir, listFiles } from '../fsutil.js';
@@ -47,6 +47,16 @@ import {
 } from '../switcher.js';
 import { chatEndpointOf, fetchModels, type FetchModelsResult } from './modelFetch.js';
 import { VENDOR_TEMPLATES, findTemplate, type VendorTemplate, type TemplateModel } from './templates.js';
+import {
+  createCombo,
+  listComboNames,
+  loadCombo,
+  addComboMember,
+  removeComboMember,
+  lintCombo,
+} from '../combo.js';
+import { addRoute, readRoutes, removeRoute, validateAlias, type RouteBackend } from '../gateway/routes.js';
+import { getDaemonStatus, startDaemon, pingGateway } from '../gateway/daemon.js';
 
 /** 供 UI 展示的模型条目（含脱敏信息与主机名） */
 export interface ModelView {
@@ -834,4 +844,286 @@ export function getProxiedModelsJson(proxyBaseUrl: string): ModelEntry[] {
     // 替换 url 为代理地址
     return { ...m, url: proxyBaseUrl };
   });
+}
+
+// ─────────────────────────── 组合（模型组） ───────────────────────────
+
+/** GUI 简化入参 → ComboMember（每成员单后端；多级 fallback 由多条成员或后端表单表达） */
+function toComboMembers(inputs: ComboMemberInput[]): ComboMember[] {
+  return inputs.map((m) => ({
+    alias: m.alias,
+    sources: [{ profile: m.profile, model: m.model }],
+  }));
+}
+
+export interface ComboView {
+  name: string;
+  description: string;
+  /** 成员链：别名 → (源, 模型) */
+  members: ComboMember[];
+  /** 聚合后的模型条数（WorkBuddy 里看到的模型数） */
+  modelCount: number;
+  /** 与磁盘 models.json 是否一致（追加模式下 == 已追加） */
+  inSync: boolean;
+  lint: { alias: string; problems: string[] }[];
+}
+
+/** 列出全部组合（type=combo 的源） */
+export function listCombos(): ComboView[] {
+  const root = getRoot();
+  const out: ComboView[] = [];
+  const current = readCurrentModels(root);
+  for (const n of listComboNames(root)) {
+    try {
+      const p = loadCombo(root, n);
+      out.push({
+        name: p.name,
+        description: p.description ?? '',
+        members: p.combo,
+        modelCount: p.models.length,
+        inSync: current !== null && comboInSyncSafe(root, p, current),
+        lint: lintCombo(root, n),
+      });
+    } catch {
+      /* 跳过损坏的组合 */
+    }
+  }
+  return out;
+}
+
+function comboInSyncSafe(root: string, p: Profile, current: ModelEntry[]): boolean {
+  try {
+    // comboInSync 是内部签名，这里直接用 modelsEqual 近似（组合缓存 models vs 磁盘）
+    void root;
+    return modelsEqual(p.models, current);
+  } catch {
+    return false;
+  }
+}
+
+export interface ComboMemberInput {
+  alias: string;
+  profile: string;
+  model: string;
+}
+
+/** 创建组合（成员 = [{alias, profile, model}, ...]，按数组顺序 fallback） */
+export function createComboGui(name: string, members: ComboMemberInput[], description?: string): { name: string; memberCount: number } {
+  const root = getRoot();
+  const norm = createCombo(
+    root,
+    name,
+    toComboMembers(members),
+    description,
+  );
+  return { name: norm.name, memberCount: norm.combo?.length ?? members.length };
+}
+
+/** 组合追加成员 */
+export function addComboMemberGui(comboName: string, member: ComboMemberInput): { name: string; memberCount: number } {
+  const root = getRoot();
+  const p = addComboMember(root, comboName, toComboMembers([member])[0]!);
+  return { name: p.name, memberCount: p.combo?.length ?? 0 };
+}
+
+/** 组合移除成员 */
+export function removeComboMemberGui(comboName: string, alias: string): { name: string; memberCount: number } {
+  const root = getRoot();
+  const p = removeComboMember(root, comboName, alias);
+  return { name: p.name, memberCount: p.combo?.length ?? 0 };
+}
+
+/** 删除组合（保留被删副本，与普通源删除一致） */
+export function deleteCombo(name: string): { name: string; keptCopy: string | null } {
+  return removeProfile(name);
+}
+
+/** 把组合追加进当前 models.json（与点击侧栏组合源切换同语义） */
+export function applyCombo(name: string): { name: string; added: number; skipped: number; total: number } {
+  const root = getRoot();
+  const res = useCombo(name, { configDir: root });
+  return { name: res.name, added: res.added.length, skipped: res.skipped.length, total: res.total };
+}
+
+// ─────────────────────────── 图片模型 ───────────────────────────
+
+export interface ImageModelView {
+  profile: string;
+  model: string;
+  host: string;
+}
+
+export interface ImageRouteView {
+  alias: string;
+  backends: { profile: string; model: string }[];
+}
+
+export interface ImageOverview {
+  /** 各源里标记为 api=images 的模型 */
+  models: ImageModelView[];
+  /** 图片路由（kind=image） */
+  routes: ImageRouteView[];
+  /** 全部源名（供标记表单下拉） */
+  profiles: { name: string; models: string[] }[];
+  gatewayPort: number | null;
+  gatewayRunning: boolean;
+}
+
+function ensureGatewayRunning(root: string): Promise<number | null> {
+  return (async () => {
+    const status = getDaemonStatus(root);
+    if (status.running && status.port && (await pingGateway(status.port))) return status.port;
+    const { port } = startDaemon(root);
+    for (let i = 0; i < 40; i++) {
+      if (await pingGateway(port)) return port;
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    return null;
+  })();
+}
+
+/** 图片页签总览：已标记模型 + 图片路由 + 可标记的源/模型清单 */
+export function getImageOverview(): ImageOverview {
+  const root = getRoot();
+  const models: ImageModelView[] = [];
+  const profiles: { name: string; models: string[] }[] = [];
+  for (const n of listProfileNames(root)) {
+    try {
+      const p = loadProfile(root, n);
+      profiles.push({ name: p.name, models: p.models.map((m) => m.id) });
+      for (const m of p.models) {
+        if ((m as Record<string, unknown>).api === 'images') {
+          models.push({ profile: p.name, model: m.id, host: hostOf(m.url) });
+        }
+      }
+    } catch {
+      /* skip */
+    }
+  }
+  const file = readRoutes(root);
+  const routes: ImageRouteView[] = file.routes
+    .filter((r) => r.kind === 'image')
+    .map((r) => ({ alias: r.alias, backends: r.backends.map((b) => ({ profile: b.profile, model: b.model })) }));
+  const status = getDaemonStatus(root);
+  return { models, routes, profiles, gatewayPort: status.port ?? file.port ?? null, gatewayRunning: Boolean(status.running) };
+}
+
+/** 标记 / 取消标记源模型为图片模型 */
+export function markImageModel(profileName: string, modelId: string, on: boolean): { profile: string; model: string } {
+  const root = getRoot();
+  const real = resolveProfileName(root, profileName);
+  const p = loadProfile(root, real);
+  const hit = p.models.find((m) => m.id === modelId);
+  if (!hit) throw new Error(`源「${p.name}」里没有模型 ${modelId}`);
+  if (on) (hit as Record<string, unknown>).api = 'images';
+  else delete (hit as Record<string, unknown>).api;
+  saveProfile(root, p);
+  return { profile: p.name, model: hit.id };
+}
+
+/** 新建图片路由（kind=image，成员按序 fallback） */
+export function addImageRoute(
+  alias: string,
+  backends: ComboMemberInput[],
+  options: { force?: boolean } = {},
+): { alias: string; backendCount: number } {
+  const root = getRoot();
+  validateAlias(alias);
+  const parsed: RouteBackend[] = backends.map((b) => ({ profile: b.profile, model: b.model }));
+  if (parsed.length === 0) throw new Error('图片路由至少要有一个后端。');
+  addRoute(root, alias, parsed, { force: options.force === true, kind: 'image' });
+  return { alias, backendCount: parsed.length };
+}
+
+/** 删除图片路由 */
+export function removeImageRoute(alias: string): { alias: string; removed: boolean } {
+  const root = getRoot();
+  return { alias, removed: removeRoute(root, alias) !== null };
+}
+
+export interface ImageGenInput {
+  alias: string;
+  prompt: string;
+  size?: string;
+  format?: string;
+  responseFormat?: 'url' | 'b64_json';
+  watermark?: boolean;
+  promptExtend?: boolean;
+}
+
+export interface ImageGenResult {
+  images: { url?: string; dataUrl?: string }[];
+  raw?: unknown;
+}
+
+/** 生图（走网关 /v1/images/generations，自动拉起网关） */
+export async function generateImage(input: ImageGenInput): Promise<ImageGenResult> {
+  const root = getRoot();
+  const port = await ensureGatewayRunning(root);
+  if (!port) throw new Error('网关无法启动（wb-switch gateway status 排查）');
+  const payload: Record<string, unknown> = { model: input.alias, prompt: input.prompt };
+  if (input.size) payload.size = input.size;
+  if (input.format) payload.output_format = input.format;
+  payload.response_format = input.responseFormat ?? 'url';
+  if (input.watermark === false) payload.watermark = false;
+  if (input.promptExtend === false) payload.prompt_extend = false;
+  return callImageEndpoint(port, '/v1/images/generations', payload);
+}
+
+export interface ImageEditInput extends ImageGenInput {
+  /** 本地文件路径 / https URL / data URL */
+  images: string[];
+}
+
+/** 图片编辑（走网关 /v1/images/edits，本地文件自动转 data URL） */
+export async function editImage(input: ImageEditInput): Promise<ImageGenResult> {
+  const root = getRoot();
+  const port = await ensureGatewayRunning(root);
+  if (!port) throw new Error('网关无法启动（wb-switch gateway status 排查）');
+  if (!input.images?.length) throw new Error('图片编辑至少需要一张输入图片。');
+  const dataUrls = input.images.slice(0, 5).map(resolveImageInputPath);
+  const payload: Record<string, unknown> = {
+    model: input.alias,
+    prompt: input.prompt,
+    images: dataUrls.map((u) => ({ image_url: u })),
+  };
+  if (input.size) payload.size = input.size;
+  if (input.format) payload.output_format = input.format;
+  payload.response_format = input.responseFormat ?? 'url';
+  if (input.watermark === false) payload.watermark = false;
+  return callImageEndpoint(port, '/v1/images/edits', payload);
+}
+
+function resolveImageInputPath(input: string): string {
+  if (/^https?:\/\//i.test(input) || input.startsWith('data:')) return input;
+  const file = path.resolve(input);
+  if (!fs.existsSync(file)) throw new Error(`图片不存在：${input}`);
+  const ext = path.extname(file).toLowerCase().replace('.', '') || 'png';
+  const mime = ext === 'jpg' ? 'jpeg' : ext;
+  return `data:image/${mime};base64,${fs.readFileSync(file).toString('base64')}`;
+}
+
+async function callImageEndpoint(port: number, endpoint: string, payload: Record<string, unknown>): Promise<ImageGenResult> {
+  const res = await fetch(`http://127.0.0.1:${port}${endpoint}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const text = await res.text();
+  let json: any = null;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    /* 非 JSON */
+  }
+  if (res.status !== 200) {
+    throw new Error(`HTTP ${res.status}：${String(json?.error?.message ?? text).slice(0, 300)}`);
+  }
+  const data: any[] = Array.isArray(json?.data) ? json.data : [];
+  const images: { url?: string; dataUrl?: string }[] = [];
+  for (const it of data) {
+    if (it?.url) images.push({ url: String(it.url) });
+    else if (it?.b64_json) images.push({ dataUrl: `data:image/png;base64,${String(it.b64_json)}` });
+  }
+  return { images };
 }

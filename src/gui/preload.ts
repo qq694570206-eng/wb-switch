@@ -54,6 +54,25 @@ const api = {
   ccsList: (appTypes?: string[]) => ipcRenderer.invoke('wb:ccsList', appTypes),
   ccsImport: (appTypes?: string[], overwrite = false, onlyNames?: string[]) =>
     ipcRenderer.invoke('wb:ccsImport', appTypes, overwrite, onlyNames),
+  // 组合（模型组）
+  comboList: () => ipcRenderer.invoke('wb:comboList'),
+  comboCreate: (name: string, members: unknown[], description?: string) =>
+    ipcRenderer.invoke('wb:comboCreate', name, members, description),
+  comboAddMember: (comboName: string, member: unknown) =>
+    ipcRenderer.invoke('wb:comboAddMember', comboName, member),
+  comboRemoveMember: (comboName: string, alias: string) =>
+    ipcRenderer.invoke('wb:comboRemoveMember', comboName, alias),
+  comboDelete: (name: string) => ipcRenderer.invoke('wb:comboDelete', name),
+  comboApply: (name: string) => ipcRenderer.invoke('wb:comboApply', name),
+  // 图片模型
+  imageOverview: () => ipcRenderer.invoke('wb:imageOverview'),
+  imageMark: (profile: string, model: string, on: boolean) =>
+    ipcRenderer.invoke('wb:imageMark', profile, model, on),
+  imageRouteAdd: (alias: string, backends: unknown[], force?: boolean) =>
+    ipcRenderer.invoke('wb:imageRouteAdd', alias, backends, force),
+  imageRouteRemove: (alias: string) => ipcRenderer.invoke('wb:imageRouteRemove', alias),
+  imageGen: (input: unknown) => ipcRenderer.invoke('wb:imageGen', input),
+  imageEdit: (input: unknown) => ipcRenderer.invoke('wb:imageEdit', input),
   onTraySwitched: (cb: (name: string) => void) => {
     ipcRenderer.on('wb:tray-switched', (_e, name: string) => cb(name));
   },

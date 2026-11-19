@@ -198,10 +198,12 @@ run(['init', '183']);
 // ── 7. MCP stdio ──
 {
   // MCP 的 ensureGateway 按 routes.json 的 port 拉起网关；
-  // 默认 7533 会被真实网关占住导致 ping 探活误命中，必须用独立端口
+  // 固定端口会被上一轮残留的守护进程占住（配置目录已删、路由为空），
+  // ping 探活误命中 → 必须用每次运行唯一的端口
+  const mcpPort = 17600 + (process.pid % 400);
   const routesPath = path.join(ROOT, 'wb-switch', 'routes.json');
   const routesCfg = JSON.parse(fs.readFileSync(routesPath, 'utf8'));
-  routesCfg.port = 17537;
+  routesCfg.port = mcpPort;
   fs.writeFileSync(routesPath, JSON.stringify(routesCfg, null, 2));
 
   const mcp = spawn('node', [CLI, 'mcp'], {

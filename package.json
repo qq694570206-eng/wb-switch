@@ -1,6 +1,6 @@
 {
   "name": "wb-switch",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "WorkBuddy 模型源切换工具（桌面图形界面 + 命令行）",
   "type": "module",
   "bin": {

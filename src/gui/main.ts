@@ -44,13 +44,30 @@ import {
   listCcSwitch,
   importCcSwitch,
   type ComposeModelsInput,
+  type ComboMemberInput,
   type ConnectionSuggestion,
   type DoctorReport,
+  type ImageEditInput,
+  type ImageGenInput,
   type ManualProfileInput,
   type ModelView,
   type Overview,
   type ProfileDetail,
   type SwitchReport,
+} from './service.js';
+import {
+  addComboMemberGui,
+  addImageRoute,
+  applyCombo,
+  createComboGui,
+  deleteCombo,
+  editImage,
+  generateImage,
+  getImageOverview,
+  listCombos,
+  markImageModel,
+  removeComboMemberGui,
+  removeImageRoute,
 } from './service.js';
 import type { VendorTemplate } from './templates.js';
 import { listProfileNames } from '../profiles.js';
@@ -515,6 +532,36 @@ function registerIpc(): void {
   ipcMain.handle('wb:ccsImport', (_e, appTypes?: string[], overwrite?: boolean, onlyNames?: string[]) =>
     handle(() => importCcSwitch(appTypes, overwrite === true, onlyNames)),
   );
+
+  // ── 组合（模型组） ──
+  ipcMain.handle('wb:comboList', () => handle(() => listCombos()));
+  ipcMain.handle(
+    'wb:comboCreate',
+    (_e, name: string, members: ComboMemberInput[], description?: string) =>
+      handle(() => createComboGui(name, members, description)),
+  );
+  ipcMain.handle('wb:comboAddMember', (_e, comboName: string, member: ComboMemberInput) =>
+    handle(() => addComboMemberGui(comboName, member)),
+  );
+  ipcMain.handle('wb:comboRemoveMember', (_e, comboName: string, alias: string) =>
+    handle(() => removeComboMemberGui(comboName, alias)),
+  );
+  ipcMain.handle('wb:comboDelete', (_e, name: string) => handle(() => deleteCombo(name)));
+  ipcMain.handle('wb:comboApply', (_e, name: string) => handle(() => applyCombo(name)));
+
+  // ── 图片模型 ──
+  ipcMain.handle('wb:imageOverview', () => handle(() => getImageOverview()));
+  ipcMain.handle('wb:imageMark', (_e, profile: string, model: string, on: boolean) =>
+    handle(() => markImageModel(profile, model, on === true)),
+  );
+  ipcMain.handle(
+    'wb:imageRouteAdd',
+    (_e, alias: string, backends: ComboMemberInput[], force?: boolean) =>
+      handle(() => addImageRoute(alias, backends, { force: force === true })),
+  );
+  ipcMain.handle('wb:imageRouteRemove', (_e, alias: string) => handle(() => removeImageRoute(alias)));
+  ipcMain.handle('wb:imageGen', (_e, input: ImageGenInput) => handleAsync(() => generateImage(input)));
+  ipcMain.handle('wb:imageEdit', (_e, input: ImageEditInput) => handleAsync(() => editImage(input)));
 }
 
 // ─────────────────────────── 生命周期 ───────────────────────────

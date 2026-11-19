@@ -2091,7 +2091,7 @@
   /** 切换主区域视图 */
   function setView(view) {
     state.view = view;
-    for (const v of ['sources', 'backups', 'doctor', 'import']) {
+    for (const v of ['sources', 'backups', 'combos', 'image', 'doctor', 'import']) {
       $(`#view-${v}`).hidden = v !== view;
     }
     document.querySelectorAll('.tab-btn').forEach((b) => {
@@ -2099,6 +2099,8 @@
     });
     if (view === 'backups') void loadBackups();
     if (view === 'doctor') void loadDoctor();
+    if (view === 'combos') void loadCombos();
+    if (view === 'image') void loadImage();
   }
 
   // ───────────────────────── 事件绑定 ─────────────────────────
@@ -2144,6 +2146,12 @@
     $('#btnDelete').onclick = () => void doDelete();
 
     $('#btnRefreshBackups').onclick = () => void loadBackups();
+    $('#btnComboRefresh').onclick = () => void loadCombos();
+    $('#btnComboNew').onclick = () => openComboNewModal();
+    $('#btnImageRefresh').onclick = () => void loadImage();
+    $('#btnImageMark').onclick = () => openImageMarkModal();
+    $('#btnImageRouteNew').onclick = () => openImageRouteModal();
+    $('#btnImageGen').onclick = () => void guarded(doGenerate);
     $('#btnOpenBackups').onclick = () => {
       void call(api.reveal(state.overview.backupsPath)).catch(reportError);
     };
@@ -2436,6 +2444,463 @@
   function toggleTheme() {
     const t = getTheme();
     setTheme(t === 'auto' ? 'light' : t === 'light' ? 'dark' : 'auto');
+  }
+
+  // ───────────────────────── 模型组（组合） ─────────────────────────
+
+  let comboCache = [];
+
+  async function loadCombos() {
+    try {
+      comboCache = await call(api.comboList());
+      renderCombos();
+    } catch (err) {
+      reportError(err);
+    }
+  }
+
+  function renderCombos() {
+    const wrap = $('#comboList');
+    if (!comboCache.length) {
+      wrap.innerHTML =
+        '<div class="row-card"><div class="rc-main"><div class="rc-title">还没有组合</div>' +
+        '<div class="rc-sub">组合把多个源的模型聚合成一个名字；点右上角「新建组合」开始</div></div></div>';
+      return;
+    }
+    wrap.innerHTML = comboCache
+      .map((c) => {
+        const problems = (c.lint || []).filter((x) => x.problems && x.problems.length);
+        const lintHtml = problems.length
+          ? `<span class="pill warn" title="${esc(problems.map((p) => `${p.alias}: ${p.problems.join('; ')}`).join('\n'))}">${problems.length} 个问题</span>`
+          : '';
+        const members = (c.members || [])
+          .map(
+            (m, i) => `
+        <div class="combo-member" data-alias="${esc(m.alias)}">
+          <span class="combo-idx">${i + 1}</span>
+          <span class="mono">${esc(m.alias)}</span>
+          <span class="dim">← ${esc((m.sources || []).map((s) => `${s.profile}/${s.model}`).join(' → '))}</span>
+          <button class="icon-btn combo-del-member" title="移除成员">✕</button>
+        </div>`,
+          )
+          .join('');
+        return `
+      <div class="row-card combo-card" data-name="${esc(c.name)}">
+        <div class="rc-main">
+          <div class="rc-title">${esc(c.name)} ${lintHtml}${c.inSync ? '<span class="pill">已追加</span>' : ''}</div>
+          <div class="rc-sub">${esc(c.description || '')} · ${c.members.length} 个成员 · 聚合 ${c.modelCount} 个模型</div>
+          <div class="combo-members">${members}</div>
+        </div>
+        <div class="combo-actions">
+          <button class="btn btn-primary btn-sm combo-apply">追加到当前</button>
+          <button class="btn btn-quiet btn-sm combo-add">添加成员</button>
+          <button class="btn btn-danger-quiet btn-sm combo-del">删除</button>
+        </div>
+      </div>`;
+      })
+      .join('');
+
+    wrap.querySelectorAll('.combo-card').forEach((card) => {
+      const name = card.dataset.name;
+      card.querySelector('.combo-apply').onclick = () =>
+        void guarded(async () => {
+          const r = await call(api.comboApply(name));
+          toast('ok', `已追加「${r.name}」`, `新增 ${r.added} · 跳过 ${r.skipped} · 当前共 ${r.total} 个模型`);
+          await reload();
+          await loadCombos();
+        });
+      card.querySelector('.combo-add').onclick = () => openComboAddMemberModal(name);
+      card.querySelector('.combo-del').onclick = () =>
+        void guarded(async () => {
+          if (!window.confirm(`删除组合「${name}」？（已追加进 models.json 的模型不受影响）`)) return;
+          await call(api.comboDelete(name));
+          toast('ok', '组合已删除');
+          await loadCombos();
+          api.refreshTray();
+        });
+    });
+    wrap.querySelectorAll('.combo-del-member').forEach((btn) => {
+      btn.onclick = () =>
+        void guarded(async () => {
+          const card = btn.closest('.combo-card');
+          const alias = btn.closest('.combo-member').dataset.alias;
+          if (!window.confirm(`从「${card.dataset.name}」移除成员「${alias}」？`)) return;
+          await call(api.comboRemoveMember(card.dataset.name, alias));
+          toast('ok', '成员已移除');
+          await loadCombos();
+        });
+    });
+  }
+
+  /** 成员行：别名 + 源下拉 + 模型下拉（模型随源联动） */
+  function memberRowHtml(profileNames, idx) {
+    return `
+    <div class="member-row" data-idx="${idx}">
+      <input class="input input-sm mr-alias" placeholder="别名（WorkBuddy 模型名）" spellcheck="false">
+      <select class="input input-sm mr-profile">
+        ${profileNames.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join('')}
+      </select>
+      <select class="input input-sm mr-model"></select>
+      <button class="icon-btn mr-del" title="移除该行">✕</button>
+    </div>`;
+  }
+
+  async function fillModelSelect(row) {
+    const profileSel = row.querySelector('.mr-profile');
+    const modelSel = row.querySelector('.mr-model');
+    modelSel.innerHTML = '<option value="">加载中…</option>';
+    try {
+      const d = await call(api.profile(profileSel.value));
+      modelSel.innerHTML = d.models.map((m) => `<option value="${esc(m.id)}">${esc(m.id)}</option>`).join('') || '<option value="">（该源没有模型）</option>';
+    } catch {
+      modelSel.innerHTML = '<option value="">（读取失败）</option>';
+    }
+  }
+
+  function wireMemberRow(row, onChange) {
+    row.querySelector('.mr-profile').onchange = () => void fillModelSelect(row);
+    row.querySelector('.mr-del').onclick = () => {
+      row.remove();
+      if (onChange) onChange();
+    };
+    void fillModelSelect(row);
+  }
+
+  function collectMemberRows(container) {
+    const out = [];
+    for (const row of container.querySelectorAll('.member-row')) {
+      const alias = row.querySelector('.mr-alias').value.trim();
+      const profile = row.querySelector('.mr-profile').value;
+      const model = row.querySelector('.mr-model').value;
+      if (alias && profile && model) out.push({ alias, profile, model });
+    }
+    return out;
+  }
+
+  function openComboNewModal() {
+    const profileNames = (state.overview?.profiles || []).map((p) => p.name);
+    if (!profileNames.length) {
+      toast('err', '还没有普通源', '先在「源」页创建至少一个源，再建组合');
+      return;
+    }
+    const body = `
+      <div class="form-col">
+        <label class="form-label">组合名（WorkBuddy 里的源名，需唯一）</label>
+        <input class="input" id="comboName" placeholder="例：mymix" spellcheck="false">
+        <label class="form-label">成员（按序 fallback：前面的失败重试后切下一个）</label>
+        <div id="comboMembers">${memberRowHtml(profileNames, 0)}</div>
+        <button class="btn btn-quiet btn-sm" id="comboAddRow">＋ 添加成员</button>
+        <label class="form-label">描述（可选）</label>
+        <input class="input" id="comboDesc" placeholder="例：聚合 183 和 131 的常用模型" spellcheck="false">
+      </div>`;
+    openModal({
+      title: '新建组合',
+      body,
+      wide: true,
+      footer: [
+        { label: '取消', className: 'btn btn-quiet', onClick: closeModal },
+        {
+          label: '创建组合',
+          className: 'btn btn-primary',
+          onClick: () =>
+            void guarded(async () => {
+              const name = $('#comboName').value.trim();
+              const members = collectMemberRows($('#comboMembers'));
+              if (!name) {
+                toast('err', '请填写组合名');
+                return;
+              }
+              if (!members.length) {
+                toast('err', '至少一个完整成员（别名/源/模型都要填）');
+                return;
+              }
+              const r = await call(api.comboCreate(name, members, $('#comboDesc').value.trim() || undefined));
+              toast('ok', `组合「${r.name}」已创建`, `${r.memberCount} 个成员`);
+              closeModal();
+              await loadCombos();
+              await reload();
+              api.refreshTray();
+            }),
+        },
+      ],
+    });
+    const rows = $('#comboMembers');
+    $('#comboAddRow').onclick = () => {
+      rows.insertAdjacentHTML('beforeend', memberRowHtml(profileNames, rows.children.length));
+      wireMemberRow(rows.lastElementChild);
+    };
+    wireMemberRow(rows.firstElementChild);
+  }
+
+  function openComboAddMemberModal(comboName) {
+    const profileNames = (state.overview?.profiles || []).map((p) => p.name);
+    const body = `
+      <div class="form-col">
+        <div class="rc-sub">往「${esc(comboName)}」追加一个成员（别名须组合内唯一）</div>
+        ${memberRowHtml(profileNames, 0)}
+      </div>`;
+    openModal({
+      title: '添加成员',
+      body,
+      wide: true,
+      footer: [
+        { label: '取消', className: 'btn btn-quiet', onClick: closeModal },
+        {
+          label: '追加',
+          className: 'btn btn-primary',
+          onClick: () =>
+            void guarded(async () => {
+              const members = collectMemberRows($('#modalBody'));
+              if (!members.length) {
+                toast('err', '别名/源/模型都要填');
+                return;
+              }
+              await call(api.comboAddMember(comboName, members[0]));
+              toast('ok', '成员已追加');
+              closeModal();
+              await loadCombos();
+              await reload();
+            }),
+        },
+      ],
+    });
+    wireMemberRow($('#modalBody').querySelector('.member-row'));
+  }
+
+  // ───────────────────────── 图片模型 ─────────────────────────
+
+  let imageCache = null;
+
+  async function loadImage() {
+    try {
+      imageCache = await call(api.imageOverview());
+      renderImage();
+    } catch (err) {
+      reportError(err);
+    }
+  }
+
+  function renderImage() {
+    if (!imageCache) return;
+    $('#imgRouteCount').textContent = imageCache.routes.length;
+    $('#imgModelCount').textContent = imageCache.models.length;
+
+    const rl = $('#imageRouteList');
+    rl.innerHTML = imageCache.routes.length
+      ? imageCache.routes
+          .map(
+            (r) => `
+      <div class="row-card image-route-card" data-alias="${esc(r.alias)}">
+        <div class="rc-main">
+          <div class="rc-title mono">${esc(r.alias)}</div>
+          <div class="rc-sub">fallback：${esc(r.backends.map((b) => `${b.profile}/${b.model}`).join(' → '))}</div>
+        </div>
+        <button class="btn btn-danger-quiet btn-sm img-route-del">删除</button>
+      </div>`,
+          )
+          .join('')
+      : '<div class="row-card"><div class="rc-main"><div class="rc-title">还没有图片路由</div><div class="rc-sub">先「标记图片模型」，再点右上角「新建图片路由」</div></div></div>';
+    rl.querySelectorAll('.img-route-del').forEach((btn) => {
+      btn.onclick = () =>
+        void guarded(async () => {
+          const alias = btn.closest('.image-route-card').dataset.alias;
+          if (!window.confirm(`删除图片路由「${alias}」？`)) return;
+          await call(api.imageRouteRemove(alias));
+          toast('ok', '路由已删除');
+          await loadImage();
+        });
+    });
+
+    const ml = $('#imageModelList');
+    ml.innerHTML = imageCache.models.length
+      ? imageCache.models
+          .map(
+            (m) => `
+      <div class="row-card image-model-card" data-profile="${esc(m.profile)}" data-model="${esc(m.model)}">
+        <div class="rc-main">
+          <div class="rc-title mono">${esc(m.model)}</div>
+          <div class="rc-sub">源：${esc(m.profile)}${m.host ? ` · ${esc(m.host)}` : ''}</div>
+        </div>
+        <button class="btn btn-quiet btn-sm img-unmark">取消标记</button>
+      </div>`,
+          )
+          .join('')
+      : '<div class="row-card"><div class="rc-main"><div class="rc-title">还没有标记的图片模型</div><div class="rc-sub">点右上角「标记图片模型」，把源里的 U1.5 等标成图片模型（导入模型列表后手动标记）</div></div></div>';
+    ml.querySelectorAll('.img-unmark').forEach((btn) => {
+      btn.onclick = () =>
+        void guarded(async () => {
+          const c = btn.closest('.image-model-card');
+          await call(api.imageMark(c.dataset.profile, c.dataset.model, false));
+          toast('ok', '已取消标记');
+          await loadImage();
+        });
+    });
+
+    const sel = $('#genAlias');
+    const opts = imageCache.routes.map((r) => `<option value="${esc(r.alias)}">${esc(r.alias)}</option>`).join('');
+    sel.innerHTML = opts || '<option value="">（先建图片路由）</option>';
+    sel.disabled = !opts.length;
+    $('#btnImageGen').disabled = !opts.length;
+  }
+
+  function openImageMarkModal() {
+    const profiles = imageCache?.profiles || [];
+    if (!profiles.length) {
+      toast('err', '还没有源', '先在「源」页导入/创建源');
+      return;
+    }
+    const body = `
+      <div class="form-col">
+        <label class="form-label">源</label>
+        <select class="input" id="markProfile">
+          ${profiles.map((p) => `<option value="${esc(p.name)}">${esc(p.name)}</option>`).join('')}
+        </select>
+        <label class="form-label">模型（导入模型列表后，挑 U1.5 等图片模型标记）</label>
+        <select class="input" id="markModel"></select>
+        <div class="rc-sub" id="markPreview"></div>
+      </div>`;
+    openModal({
+      title: '标记图片模型',
+      body,
+      footer: [
+        { label: '取消', className: 'btn btn-quiet', onClick: closeModal },
+        {
+          label: '标记为图片模型',
+          className: 'btn btn-primary',
+          onClick: () =>
+            void guarded(async () => {
+              const p = $('#markProfile').value;
+              const m = $('#markModel').value;
+              if (!p || !m) {
+                toast('err', '请选择源和模型');
+                return;
+              }
+              await call(api.imageMark(p, m, true));
+              toast('ok', `已标记 ${m}`, `源：${p}`);
+              closeModal();
+              await loadImage();
+            }),
+        },
+      ],
+    });
+    const fill = async () => {
+      const p = $('#markProfile').value;
+      try {
+        const d = await call(api.profile(p));
+        $('#markModel').innerHTML = d.models.map((m) => `<option value="${esc(m.id)}">${esc(m.id)}</option>`).join('') || '<option value="">（该源没有模型）</option>';
+        const hit = d.models.find((m) => /u1\.5|image|imagen|dall|diffusion|seedream|banana/i.test(m.id));
+        $('#markPreview').textContent = hit ? `建议标记：${hit.id}（按名字自动识别）` : '没有按名字识别到图片模型，请手动挑选';
+      } catch {
+        $('#markModel').innerHTML = '<option value="">（读取失败）</option>';
+      }
+    };
+    $('#markProfile').onchange = () => void fill();
+    void fill();
+  }
+
+  function openImageRouteModal() {
+    const marked = imageCache?.models || [];
+    if (!marked.length) {
+      toast('err', '还没有已标记的图片模型', '先「标记图片模型」');
+      return;
+    }
+    const markedOpts = marked.map((m) => `<option value="${esc(m.profile)}|${esc(m.model)}">${esc(m.profile)} / ${esc(m.model)}</option>`).join('');
+    const backendRow = (idx) => `
+      <div class="member-row" data-idx="${idx}">
+        <span class="combo-idx">${idx + 1}</span>
+        <select class="input input-sm ir-backend">${markedOpts}</select>
+        <button class="icon-btn mr-del" title="移除该行">✕</button>
+      </div>`;
+    const body = `
+      <div class="form-col">
+        <label class="form-label">路由别名（WorkBuddy 里调用时填的 model 名）</label>
+        <input class="input" id="imgAlias" placeholder="例：u1.5-lite" spellcheck="false">
+        <label class="form-label">后端链（按序 fallback：429/配额失败自动切下一个）</label>
+        <div id="imgBackends">${backendRow(0)}</div>
+        <button class="btn btn-quiet btn-sm" id="imgAddBackend">＋ 添加后端</button>
+      </div>`;
+    openModal({
+      title: '新建图片路由',
+      body,
+      wide: true,
+      footer: [
+        { label: '取消', className: 'btn btn-quiet', onClick: closeModal },
+        {
+          label: '创建路由',
+          className: 'btn btn-primary',
+          onClick: () =>
+            void guarded(async () => {
+              const alias = $('#imgAlias').value.trim();
+              const backends = [];
+              for (const row of $('#imgBackends').querySelectorAll('.member-row')) {
+                const v = row.querySelector('.ir-backend').value.split('|');
+                if (v.length === 2 && v[0] && v[1]) backends.push({ alias: `${v[1]}`, profile: v[0], model: v[1] });
+              }
+              if (!alias) {
+                toast('err', '请填写路由别名');
+                return;
+              }
+              if (!backends.length) {
+                toast('err', '至少一个后端');
+                return;
+              }
+              await call(api.imageRouteAdd(alias, backends, true));
+              toast('ok', `图片路由「${alias}」已创建`, `${backends.length} 个后端 · kind=image`);
+              closeModal();
+              await loadImage();
+            }),
+        },
+      ],
+    });
+    const rows = $('#imgBackends');
+    $('#imgAddBackend').onclick = () => {
+      rows.insertAdjacentHTML('beforeend', backendRow(rows.children.length));
+      wireImageBackendRow(rows.lastElementChild);
+    };
+    const wireImageBackendRow = (row) => {
+      row.querySelector('.mr-del').onclick = () => row.remove();
+    };
+    wireImageBackendRow(rows.firstElementChild);
+  }
+
+  async function doGenerate() {
+    const alias = $('#genAlias').value;
+    const prompt = $('#genPrompt').value.trim();
+    if (!alias) {
+      toast('err', '先建一个图片路由');
+      return;
+    }
+    if (!prompt) {
+      toast('err', '请输入画面描述');
+      return;
+    }
+    const status = $('#genStatus');
+    const res = $('#genResult');
+    res.hidden = false;
+    res.innerHTML = '<div class="rc-sub">生成中…（SenseNova U1.5 实测约 1–2 分钟，请耐心等待）</div>';
+    status.textContent = '请求中…';
+    try {
+      const r = await call(
+        api.imageGen({
+          alias,
+          prompt,
+          size: $('#genSize').value || undefined,
+          watermark: $('#genNoWatermark').checked ? false : undefined,
+          responseFormat: 'url',
+        }),
+      );
+      status.textContent = `完成 · ${r.images.length} 张`;
+      res.innerHTML = r.images
+        .map((it) =>
+          it.dataUrl
+            ? `<img class="gen-img" src="${it.dataUrl}" alt="生成结果">`
+            : `<div class="gen-item"><img class="gen-img" src="${esc(it.url)}" alt="生成结果"><div class="rc-sub mono">${esc(it.url)}</div></div>`,
+        )
+        .join('');
+    } catch (err) {
+      status.textContent = '';
+      res.innerHTML = `<div class="rc-sub gen-err">${esc(err?.message || String(err))}</div>`;
+    }
   }
 
   // ───────────────────────── 启动 ─────────────────────────
