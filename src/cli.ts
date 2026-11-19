@@ -373,7 +373,8 @@ function initTarget(a: Args): string {
       fail(`未知目标工具「${explicit}」。可用：${TARGET_IDS.join('、')}`);
     }
     id = explicit;
-    writeCurrentTarget(wbSwitchHome(), id as TargetId);
+    // --target 是「临时指定」，不写全局设置（否则一次临时命令会改掉默认目标，
+    // 让后续命令莫名其妙落在别的工具上）。要持久切换用 `targets use`。
   } else {
     id = readCurrentTarget(wbSwitchHome());
   }
