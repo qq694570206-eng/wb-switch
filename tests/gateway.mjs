@@ -25,7 +25,7 @@ function check(name, cond, detail = '') {
 function run(args, opts = {}) {
   return execFileSync('node', [CLI, ...args], {
     encoding: 'utf8',
-    env: { ...process.env, WB_CONFIG_DIR: ROOT, ...opts },
+    env: { ...process.env, WB_CONFIG_DIR: ROOT, WB_SWITCH_HOME: ROOT, ...opts },
   });
 }
 
@@ -81,7 +81,8 @@ const modelJsonB = [
     supportsToolCall: true, supportsImages: false, supportsReasoning: false, useCustomProtocol: false,
   },
 ];
-fs.mkdirSync(path.join(ROOT, 'wb-switch'), { recursive: true });
+fs.mkdirSync(path.join(ROOT, 'targets', 'workbuddy'), { recursive: true });
+fs.mkdirSync(path.join(ROOT, 'gateway'), { recursive: true });
 fs.writeFileSync(path.join(ROOT, 'models.json'), JSON.stringify(modelJson));
 fs.writeFileSync(path.join(ROOT, 'models-b.json'), JSON.stringify(modelJsonB));
 
@@ -98,7 +99,7 @@ run(['gateway', 'route', 'add', 'glm-fallback', '--no-test', '--profile', 'upDea
 // 路由 3：B → dead（第一个成功）
 run(['gateway', 'route', 'add', 'glm-bfirst', '--no-test', '--profile', 'upB', '--model', 'glm-4.7b', '--profile2', 'upDead', '--model2', 'glm-4.7']);
 
-const routesJson = JSON.parse(fs.readFileSync(path.join(ROOT, 'wb-switch', 'routes.json'), 'utf8'));
+const routesJson = JSON.parse(fs.readFileSync(path.join(ROOT, 'gateway', 'routes.json'), 'utf8'));
 check('routes.json 有 3 条路由', routesJson.routes.length === 3);
 
 // ── 启动网关（前台模式但异步运行）──
@@ -108,7 +109,7 @@ const gwPort = 17533;
 // 用 node 子进程跑 gateway run
 const { spawn } = await import('node:child_process');
 const gw = spawn('node', [CLI, 'gateway', 'run', '--port', String(gwPort)], {
-  env: { ...process.env, WB_CONFIG_DIR: ROOT },
+  env: { ...process.env, WB_CONFIG_DIR: ROOT, WB_SWITCH_HOME: ROOT },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let gwReady = false;
@@ -169,7 +170,7 @@ async function post(url, body, headers = {}) {
 
 // ── 测试 6：日志 ──
 {
-  const logFile = path.join(ROOT, 'wb-switch', 'logs', 'gateway.log');
+  const logFile = path.join(ROOT, 'targets', 'workbuddy', 'logs', 'gateway.log');
   const lines = fs.readFileSync(logFile, 'utf8').trim().split('\n').map(l => JSON.parse(l));
   const failLines = lines.filter(l => l.failed);
   check('日志记录了失败转移', failLines.length >= 1 && failLines.some(l => l.alias === 'glm-fallback'));

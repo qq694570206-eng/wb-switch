@@ -21,13 +21,22 @@ const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'wbs-img-test-'));
 const CLI = path.resolve('dist/cli.js');
 
 let passed = 0, failed = 0;
+
+/** 架构升级：工具数据在 <home>/targets/workbuddy/，路由在 <home>/gateway/ */
+function dataPath(...seg) {
+  return path.join(ROOT, 'targets', 'workbuddy', ...seg);
+}
+function gatewayPath(...seg) {
+  return path.join(ROOT, 'gateway', ...seg);
+}
+
 function check(name, cond, detail = '') {
   if (cond) { passed++; console.log(`  ok ${name}`); }
   else { failed++; console.error(`  FAIL ${name} ${detail}`); }
 }
 function run(args, expectFail = false) {
   try {
-    return execFileSync('node', [CLI, ...args], { encoding: 'utf8', env: { ...process.env, WB_CONFIG_DIR: ROOT } });
+    return execFileSync('node', [CLI, ...args], { encoding: 'utf8', env: { ...process.env, WB_CONFIG_DIR: ROOT, WB_SWITCH_HOME: ROOT } });
   } catch (err) {
     if (expectFail) return (err.stderr ?? '') + (err.stdout ?? '');
     throw err;
@@ -66,7 +75,8 @@ await new Promise(r => upImg.listen(0, '127.0.0.1', r));
 const portImg = upImg.address().port;
 
 // ── 准备源（chat url 形态——验证推导） ──
-fs.mkdirSync(path.join(ROOT, 'wb-switch'), { recursive: true });
+fs.mkdirSync(dataPath(), { recursive: true });
+fs.mkdirSync(gatewayPath(), { recursive: true });
 const entry = {
   id: 'sensenova-u1.5-lite', name: 'sensenova-u1.5-lite', vendor: 'SenseNova',
   url: `http://127.0.0.1:${portImg}/v1/chat/completions`, apiKey: 'sk-mock',
@@ -90,7 +100,7 @@ run(['init', '183']);
 {
   const out = run(['image', 'route', 'add', 'u1.5-lite', '--profile', '183', '--model', 'sensenova-u1.5-lite', '--no-test']);
   check('image route add 成功', out.includes('已添加图片路由'));
-  const routes = JSON.parse(fs.readFileSync(path.join(ROOT, 'wb-switch', 'routes.json'), 'utf8'));
+  const routes = JSON.parse(fs.readFileSync(gatewayPath('routes.json'), 'utf8'));
   const r = routes.routes.find(x => x.alias === 'u1.5-lite');
   check('kind=image 落盘', r?.kind === 'image');
   // list
@@ -102,13 +112,13 @@ run(['init', '183']);
 {
   const out = run(['image', 'mark', '183', 'sensenova-u1.5-lite']);
   check('mark 标记成功', out.includes('已标记'));
-  const profile = JSON.parse(fs.readFileSync(path.join(ROOT, 'wb-switch', 'profiles', '183.json'), 'utf8'));
+  const profile = JSON.parse(fs.readFileSync(dataPath('profiles', '183.json'), 'utf8'));
   check('api=images 写入', profile.models[0].api === 'images');
   const modelsOut = run(['image', 'models']);
   check('image models 列出', modelsOut.includes('sensenova-u1.5-lite'));
   const out2 = run(['image', 'unmark', '183', 'sensenova-u1.5-lite']);
   check('unmark 移除', out2.includes('已取消标记'));
-  const profile2 = JSON.parse(fs.readFileSync(path.join(ROOT, 'wb-switch', 'profiles', '183.json'), 'utf8'));
+  const profile2 = JSON.parse(fs.readFileSync(dataPath('profiles', '183.json'), 'utf8'));
   check('api 字段已删', !('api' in profile2.models[0]));
   // 重新标记（供 MCP 测试）
   run(['image', 'mark', '183', 'sensenova-u1.5-lite']);
@@ -118,7 +128,7 @@ run(['init', '183']);
 {
   const gwPort = 17536;
   const gw = spawn('node', [CLI, 'gateway', 'run', '--port', String(gwPort)], {
-    env: { ...process.env, WB_CONFIG_DIR: ROOT }, stdio: ['ignore', 'pipe', 'inherit'],
+    env: { ...process.env, WB_CONFIG_DIR: ROOT, WB_SWITCH_HOME: ROOT }, stdio: ['ignore', 'pipe', 'inherit'],
   });
   let ready = false;
   gw.stdout.on('data', d => { if (String(d).includes('listening')) ready = true; });
@@ -201,13 +211,13 @@ run(['init', '183']);
   // 固定端口会被上一轮残留的守护进程占住（配置目录已删、路由为空），
   // ping 探活误命中 → 必须用每次运行唯一的端口
   const mcpPort = 17600 + (process.pid % 400);
-  const routesPath = path.join(ROOT, 'wb-switch', 'routes.json');
+  const routesPath = gatewayPath('routes.json');
   const routesCfg = JSON.parse(fs.readFileSync(routesPath, 'utf8'));
   routesCfg.port = mcpPort;
   fs.writeFileSync(routesPath, JSON.stringify(routesCfg, null, 2));
 
   const mcp = spawn('node', [CLI, 'mcp'], {
-    env: { ...process.env, WB_CONFIG_DIR: ROOT }, stdio: ['pipe', 'pipe', 'inherit'],
+    env: { ...process.env, WB_CONFIG_DIR: ROOT, WB_SWITCH_HOME: ROOT }, stdio: ['pipe', 'pipe', 'inherit'],
   });
   const send = obj => mcp.stdin.write(JSON.stringify(obj) + '\n');
   const waitResp = (timeoutMs = 15000) => new Promise((resolve, reject) => {

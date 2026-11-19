@@ -42,7 +42,40 @@ export function validateProfileName(name: string): string {
 }
 
 function profilePath(root: string, name: string): string {
-  return path.join(profilesDir(root), `${safeFileName(name)}.json`);
+  const primary = path.join(profilesDir(root), `${safeFileName(name)}.json`);
+  if (exists(primary)) return primary;
+  // 跨 target 兜底：路由表引用的是全局唯一的源名，而源快照按 target 分目录存放。
+  // 网关等共享组件不应因「当前 target 不同」就找不到源。
+  try {
+    const alt = findProfileInOtherTargets(name);
+    if (alt) return alt;
+  } catch {
+    /* 忽略：回退到主路径，由调用方报「源不存在」 */
+  }
+  return primary;
+}
+
+/** 在所有 target 的 profiles 目录里找同名源 */
+function findProfileInOtherTargets(name: string): string | null {
+  const file = `${safeFileName(name)}.json`;
+  let targetsRoot: string;
+  try {
+    // profilesDir 形如 <home>/targets/<targetId>/profiles → 上溯两层得到 targets/
+    targetsRoot = path.dirname(path.dirname(profilesDir('')));
+  } catch {
+    return null;
+  }
+  if (!exists(targetsRoot)) return null;
+  try {
+    for (const entry of fs.readdirSync(targetsRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const candidate = path.join(targetsRoot, entry.name, 'profiles', file);
+      if (exists(candidate)) return candidate;
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 /** 列出所有源名称（按字母序） */

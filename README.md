@@ -168,20 +168,63 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall
 
 编辑源时，模型列表可拖拽排序——拖动左侧 `⣿` 手柄放到目标位置即可。顺序影响 `models.json` 里的写入顺序。
 
+## 多目标工具（v2.2）：不止 WorkBuddy
+
+wb-switch 现在是一个**通用模型切换工具**，同一套「源 / 组合 / 网关」可以管理多个 AI 工具：
+
+| 目标 | 配置文件 | 格式 | 协议 |
+| --- | --- | --- | --- |
+| **WorkBuddy** | `~/.workbuddy/models.json` | JSON 数组 | chat |
+| **Codex** | `~/.codex/config.toml` | TOML | responses |
+
+```bash
+wb-switch targets              # 查看全部目标工具与当前项
+wb-switch targets use codex    # 切到 Codex
+wb-switch --target codex list  # 临时指定（不改全局设置）
+```
+
+**数据完全隔离**：每个目标有自己的源库、组合、备份和激活状态，互不干扰。
+
+### Codex 接自定义网关
+
+Codex 只支持 `wire_api = "responses"`，而多数中转站只有 `/v1/chat/completions`。
+wb-switch 的网关做了**双向协议翻译**，所以任意 chat 上游都能给 Codex 用：
+
+- 请求：`/v1/responses` → 翻译成 `messages` 后打上游 `chat/completions`
+- 响应：上游 chat 结果 → 还原成 `output[]`（含正文 / 推理 / 工具调用）
+- 流式：chat 的 delta chunk → responses 的 `response.output_text.delta` 等事件
+- 工具调用：responses 的扁平 `tools` ↔ chat 的 `tools[].function`、`tool_calls`
+
+切到 Codex 后 `wb-switch use <源或组合>` 会：
+
+1. 把 `model` / `model_provider` 指向 wb-switch 网关
+2. 写入 `[model_providers.wb-switch]`（`wire_api = "responses"`）
+3. 为每个模型生成 profile 文件，用 `codex --profile <名称>` 切换
+4. **只定点改这几处**，你原有的 `mcp_servers` / `notify` / 注释全部保留
+
 ## 它改了哪些文件
 
-只有 `models.json` 会被改写，WorkBuddy 的其它配置一概不碰。本工具自己的数据放在：
+只改写目标工具的模型配置，其它配置一概不碰。本工具自己的数据在 `~/.wb-switch/`：
 
 ```
-%USERPROFILE%\.workbuddy\wb-switch\
-├── profiles\<源名>.json     # 每个源一份快照
-├── backups\                 # 切换前 / 还原前 / 已删除的源
-└── state.json               # 当前源指针
+~/.wb-switch/
+├── current-target.json          # 当前目标工具
+├── settings.json                # 全局设置
+├── targets/
+│   ├── workbuddy/
+│   │   ├── profiles/<源名>.json # 每个源一份快照
+│   │   ├── backups/             # 切换前 / 还原前 / 已删除的源
+│   │   └── state.json           # 当前源指针
+│   └── codex/                   # 同上，独立一套
+└── gateway/
+    └── routes.json              # 网关路由（跨目标共享）
 ```
 
-文件夹本身就是纯文本 JSON，可以手工备份、迁移、进 git。
+从旧版（`<WorkBuddy根>/wb-switch/`）升级时**首次运行自动迁移**：只补缺失文件、绝不覆盖你已改的内容，旧目录保留可回滚。
 
-**切换后需要重启 WorkBuddy（或新开一个对话）才会用上新配置**——客户端启动时会缓存模型列表。
+文件夹本身就是纯文本 JSON/TOML，可以手工备份、迁移、进 git。
+
+**切换后需要重启目标工具（或新开一个对话）才会用上新配置**——客户端启动时会缓存模型列表。
 
 ## 命令行版（可选）
 

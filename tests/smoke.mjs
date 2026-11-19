@@ -30,13 +30,21 @@ let pass = 0;
 const failures = [];
 
 function run(args, { cwd, env = {} } = {}) {
+  // 架构升级后，工具自身的数据目录与「被管理的工具配置目录」分离了：
+  //   WB_CONFIG_DIR   → 被管理的 WorkBuddy 配置根
+  //   WB_SWITCH_HOME  → wb-switch 自己的家（profiles/backups/state）
+  // 测试要保持「一个临时目录内完全隔离」，所以两者都指向同一个临时根。
+  const merged = { ...process.env, ...env, NO_COLOR: '1' };
+  if (merged.WB_CONFIG_DIR && !merged.WB_SWITCH_HOME) {
+    merged.WB_SWITCH_HOME = merged.WB_CONFIG_DIR;
+  }
   return new Promise((resolve) => {
     execFile(
       IS_EXE ? CLI : process.execPath,
       IS_EXE ? [...args, '--ascii', '--no-color'] : [CLI, ...args, '--ascii', '--no-color'],
       {
         cwd,
-        env: { ...process.env, ...env, NO_COLOR: '1' },
+        env: merged,
         timeout: 30000,
         encoding: 'utf8',
       },
@@ -59,6 +67,12 @@ function assert(cond, label, extra = '') {
     failures.push(`${label}${extra ? ` — ${extra}` : ''}`);
     console.log(`  \u2717 ${label}${extra ? ` — ${extra}` : ''}`);
   }
+}
+
+
+/** 架构升级后：某 target 的数据目录（profiles/backups/state 都在其下） */
+function targetDataDir(dir, target = 'workbuddy') {
+  return path.join(dir, 'targets', target);
 }
 
 function tmpConfig(name) {
@@ -114,7 +128,7 @@ async function main() {
 
   let r = await run(['init', 'work'], { env: envA });
   assert(r.code === 0, 'init 成功', `code=${r.code} ${r.stderr}`);
-  assert(fs.existsSync(path.join(dirA, 'wb-switch', 'profiles', 'work.json')), '生成源文件');
+  assert(fs.existsSync(path.join(targetDataDir(dirA), 'profiles', 'work.json')), '生成源文件');
 
   r = await run(['list'], { env: envA });
   assert(r.code === 0 && r.stdout.includes('work'), 'list 显示源');
@@ -141,10 +155,10 @@ async function main() {
   assert(afterSwitch.length === 1 && afterSwitch[0].id === 'gpt-4o', 'models.json 已替换为目标源内容');
 
   // 默认不自动备份：目录要么没建，要么是空的（回滚快照在 .rollback 且用完即删）
-  const backupDir = path.join(dirA, 'wb-switch', 'backups');
+  const backupDir = path.join(targetDataDir(dirA), 'backups');
   const backupsAfterSwitch = fs.existsSync(backupDir) ? fs.readdirSync(backupDir) : [];
   assert(backupsAfterSwitch.length === 0, '默认切换不自动生成备份');
-  const rollbackDir = path.join(dirA, 'wb-switch', '.rollback');
+  const rollbackDir = path.join(targetDataDir(dirA), '.rollback');
   const rollbackLeft = fs.existsSync(rollbackDir) ? fs.readdirSync(rollbackDir) : [];
   assert(rollbackLeft.length === 0, '切换成功后临时回滚快照已清理');
 
@@ -203,7 +217,7 @@ async function main() {
   const envB = { WB_CONFIG_DIR: dirB };
   await run(['init', 'a'], { env: envB });
   fs.writeFileSync(
-    path.join(dirB, 'wb-switch', 'profiles', 'b.json'),
+    path.join(targetDataDir(dirB), 'profiles', 'b.json'),
     JSON.stringify({ name: 'b', models: MODELS_A }, null, 2),
   );
   // --backup 显式要求归档，后面的 restore 依赖这份备份
@@ -254,7 +268,7 @@ async function main() {
   fs.writeFileSync(path.join(dirD, 'models.json'), JSON.stringify(MODELS_A, null, 2));
   const envD = { WB_CONFIG_DIR: dirD };
   await run(['init', 'base'], { env: envD });
-  fs.writeFileSync(path.join(dirD, 'wb-switch', 'profiles', 'empty.json'), JSON.stringify({ name: 'empty', models: [] }));
+  fs.writeFileSync(path.join(targetDataDir(dirD), 'profiles', 'empty.json'), JSON.stringify({ name: 'empty', models: [] }));
   r = await run(['use', 'empty'], { env: envD });
   assert(r.code === 4 && r.stderr.includes('空'), '空源拒绝切换', `code=${r.code}`);
 
@@ -293,7 +307,7 @@ async function main() {
   r = await run(['remove', 'imported', '-y'], { env: envA });
   assert(r.code === 0, 'remove 成功', r.stderr);
   assert(
-    fs.readdirSync(path.join(dirA, 'wb-switch', 'backups')).some((f) => f.startsWith('deleted-imported')),
+    fs.readdirSync(path.join(targetDataDir(dirA), 'backups')).some((f) => f.startsWith('deleted-imported')),
     'remove 保留副本',
   );
 

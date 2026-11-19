@@ -20,7 +20,17 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { ConfigError, ExitCode, ProfileError, UsageError, WbError, describeError } from './errors.js';
 import type { ModelEntry, Profile } from './types.js';
-import { backupsDir, dataDir, modelsFile, profilesDir, resolveConfigRoot } from './paths.js';
+import { backupsDir, dataDir, modelsFile, profilesDir, resolveConfigRoot, setActiveTarget, getActiveTargetId, wbSwitchHome } from './paths.js';
+import { ensureMigration } from './migration.js';
+import {
+  createTargets,
+  getTarget,
+  listTargets,
+  readCurrentTarget,
+  writeCurrentTarget,
+  TARGET_IDS,
+  type TargetId,
+} from './targets/index.js';
 import {
   deleteProfile,
   listProfileNames,
@@ -126,6 +136,7 @@ const BOOLEAN_FLAGS = new Set([
 
 const STRING_FLAGS = new Set([
   'config-dir',
+  'target',
   'description',
   'desc',
   'from',
@@ -210,10 +221,12 @@ function parseArgs(argv: string[]): Args {
             flags.set('quiet', true);
             break;
           case 'd':
-          case 'o': {
+          case 'o':
+          case 't': {
             const val = argv[i + 1];
             if (!val) throw new UsageError(`参数 -${ch} 需要一个值。`);
-            flags.set(ch === 'd' ? 'config-dir' : 'output', val);
+            const map: Record<string, string> = { d: 'config-dir', o: 'output', t: 'target' };
+            flags.set(map[ch]!, val);
             i++;
             break;
           }
@@ -253,6 +266,11 @@ ${b('用法')}
   wb-switch show <名称>            ${g('查看某个源的模型明细')}
   wb-switch diff <名称>            ${g('对比源与当前 models.json 的差异')}
 
+${b('目标工具（WorkBuddy / Codex）')}
+  wb-switch targets                ${g('列出全部目标工具，标记当前项')}
+  wb-switch targets use <id>       ${g('切换目标工具（workbuddy | codex）')}
+  wb-switch --target <id> <命令>   ${g('临时指定目标工具，不改全局设置')}
+
 ${b('源管理')}
   wb-switch init [名称]            ${g('把当前 models.json 保存为第一个源（默认名 default）')}
   wb-switch add <名称>             ${g('新增源（交互式，或配合 --url/--key 非交互）')}
@@ -290,6 +308,7 @@ ${b('备份与自检')}
 
 ${b('常用选项')}
   -d, --config-dir <目录>          ${g('指定 WorkBuddy 配置目录（默认 %USERPROFILE%\\.workbuddy）')}
+  -t, --target <id>               ${g('指定目标工具：workbuddy | codex（默认取既有设置）')}
   -y, --yes                        ${g('跳过确认')}
   -n, --dry-run                    ${g('只演算不写入')}
   -f, --force                      ${g('内容一致时也强制重写')}
@@ -336,6 +355,91 @@ function requireRoot(a: Args): string {
 
 function jsonOut(value: unknown): void {
   process.stdout.write(JSON.stringify(value, null, 2) + '\n');
+}
+
+// ─────────────────────── 目标工具（target）───────────────────────
+
+/**
+ * 解析并应用当前 target，随后做一次旧数据迁移检查。
+ *
+ * 优先级：--target 参数 > current-target.json > workbuddy（默认）
+ * 迁移只在首次（新目录还没有数据）执行，幂等。
+ */
+function initTarget(a: Args): string {
+  const explicit = str(a, 'target');
+  let id: string;
+  if (explicit) {
+    if (!TARGET_IDS.includes(explicit as TargetId)) {
+      fail(`未知目标工具「${explicit}」。可用：${TARGET_IDS.join('、')}`);
+    }
+    id = explicit;
+    writeCurrentTarget(wbSwitchHome(), id as TargetId);
+  } else {
+    id = readCurrentTarget(wbSwitchHome());
+  }
+  setActiveTarget(id);
+
+  // 迁移旧数据（只对 workbuddy 有意义；其它 target 无旧数据）
+  if (id === 'workbuddy') {
+    try {
+      const rep = ensureMigration(a.configDir ? path.resolve(a.configDir) : resolveConfigRoot());
+      if (rep.migrated && !has(a, 'json')) {
+        process.stderr.write(
+          `  ${c.gray('已迁移旧数据到')} ${rep.to}${c.gray('：')}${rep.items.join('、')}\n`,
+        );
+      }
+    } catch {
+      /* 迁移失败不阻塞主流程 */
+    }
+  }
+  return id;
+}
+
+/** wb-switch targets [list] | targets use <id> */
+function cmdTargets(_a: Args, rest: string[]): number {
+  const sub = rest[0];
+  const home = wbSwitchHome();
+  const opts = { workbuddyRoot: _a.configDir ? path.resolve(_a.configDir) : undefined };
+  const infos = listTargets(opts);
+  const current = readCurrentTarget(home);
+
+  if (sub === 'use' || sub === 'set') {
+    const id = rest[1];
+    if (!id) {
+      fail(`用法：wb-switch targets use <${TARGET_IDS.join('|')}>`);
+      return ExitCode.USAGE;
+    }
+    if (!TARGET_IDS.includes(id as TargetId)) {
+      fail(`未知目标工具「${id}」。可用：${TARGET_IDS.join('、')}`);
+      return ExitCode.USAGE;
+    }
+    writeCurrentTarget(home, id as TargetId);
+    const t = infos.find((x) => x.id === id)!;
+    ok(`已切换到目标工具 ${c.bold(c.cyan(t.name))}`);
+    process.stdout.write(`  ${c.gray('配置文件')} ${t.configPath}\n`);
+    process.stdout.write(`  ${c.gray('数据目录')} ${path.join(home, 'targets', id)}\n`);
+    if (!t.installed) {
+      process.stdout.write(`  ${c.yellow('注意')} 该工具尚未安装，配置会在首次使用时创建\n`);
+    }
+    return ExitCode.OK;
+  }
+
+  if (has(_a, 'json')) {
+    jsonOut({ current, targets: infos });
+    return ExitCode.OK;
+  }
+
+  process.stdout.write(`\n${c.bold('目标工具')}  ${c.gray(`数据目录 ${home}`)}\n`);
+  for (const t of infos) {
+    const mark = t.id === current ? c.green('●') : c.gray('○');
+    const inst = t.installed ? c.gray('已安装') : c.yellow('未安装');
+    process.stdout.write(`  ${mark} ${c.bold(t.name.padEnd(12))} ${c.gray(t.id.padEnd(10))} ${inst}\n`);
+    process.stdout.write(`      ${c.gray('配置')} ${t.configPath}\n`);
+    if (t.hint) process.stdout.write(`      ${c.gray(t.hint)}\n`);
+  }
+  process.stdout.write(`\n${c.gray('切换：')}wb-switch targets use <id>\n`);
+  process.stdout.write(`${c.gray('临时指定：')}wb-switch --target <id> <命令>\n\n`);
+  return ExitCode.OK;
 }
 
 /** 相对时间描述 */
@@ -1725,6 +1829,10 @@ async function main(argv: string[]): Promise<number> {
     return handleError(err, false);
   }
 
+  // 多 target：先定「当前目标工具」，再（首次）迁移旧数据。
+  // 必须在任何路径函数被调用之前完成，否则会落到默认 target 上。
+  initTarget(args);
+
   if (has(args, 'help') && args.positional.length === 0) {
     printHelp();
     return ExitCode.OK;
@@ -1735,6 +1843,10 @@ async function main(argv: string[]): Promise<number> {
   }
 
   const [cmd, ...rest] = args.positional;
+  // targets 子命令用于查看/切换目标工具
+  if (cmd === 'targets' || cmd === 'target') {
+    return cmdTargets(args, rest);
+  }
 
   try {
     switch (cmd) {

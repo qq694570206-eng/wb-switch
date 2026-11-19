@@ -32,7 +32,7 @@ function run(args, expectFail = false) {
   try {
     return execFileSync('node', [CLI, ...args], {
       encoding: 'utf8',
-      env: { ...process.env, WB_CONFIG_DIR: ROOT },
+      env: { ...process.env, WB_CONFIG_DIR: ROOT, WB_SWITCH_HOME: ROOT },
     });
   } catch (err) {
     if (expectFail) return (err.stderr ?? '') + (err.stdout ?? '');
@@ -115,7 +115,8 @@ const pRate = upRate.address().port, pQuota = upQuota.address().port;
 const p401 = up401.address().port, p500 = up500.address().port, pSlow = upSlow.address().port;
 
 // ── 准备源 ──
-fs.mkdirSync(path.join(ROOT, 'wb-switch'), { recursive: true });
+fs.mkdirSync(path.join(ROOT, 'targets', 'workbuddy'), { recursive: true });
+fs.mkdirSync(path.join(ROOT, 'gateway'), { recursive: true });
 const entry = (id, port) => ({
   id, name: id, vendor: 'T',
   url: `http://127.0.0.1:${port}/v1/chat/completions`, apiKey: 'sk-test',
@@ -152,7 +153,7 @@ addRoute('r-401', [['src401', 'm'], ['srcB', 'm']]);
 addRoute('r-500', [['src500', 'm'], ['srcB', 'm']]);
 addRoute('r-slow', [['srcSlow', 'm'], ['srcB', 'm']]);
 
-const routesFile = path.join(ROOT, 'wb-switch', 'routes.json');
+const routesFile = path.join(ROOT, 'gateway', 'routes.json');
 const routes = JSON.parse(fs.readFileSync(routesFile, 'utf8'));
 routes.retry = 3; // 显式 3 次重试（与默认一致，明确化）
 fs.writeFileSync(routesFile, JSON.stringify(routes));
@@ -161,7 +162,7 @@ fs.writeFileSync(routesFile, JSON.stringify(routes));
 const gwPort = 17535;
 const { spawn } = await import('node:child_process');
 const gw = spawn('node', [CLI, 'gateway', 'run', '--port', String(gwPort)], {
-  env: { ...process.env, WB_CONFIG_DIR: ROOT },
+  env: { ...process.env, WB_CONFIG_DIR: ROOT, WB_SWITCH_HOME: ROOT },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let gwReady = false;

@@ -25,7 +25,7 @@
 import path from 'node:path';
 import { ConfigError, UsageError } from '../errors.js';
 import { exists, readJson, stringifyJson, writeFileAtomic, ensureDir } from '../fsutil.js';
-import { dataDir } from '../paths.js';
+import { dataDir, gatewayDataDir } from '../paths.js';
 import { loadProfile, listProfileNames } from '../profiles.js';
 import { maskKey } from '../config.js';
 
@@ -67,8 +67,19 @@ export interface RoutesFile {
   routes: RouteEntry[];
 }
 
+/**
+ * 路由表文件位置。
+ *
+ * 网关是跨 target 共享的（WorkBuddy 与 Codex 都指向同一个本地网关），
+ * 所以放在 ~/.wb-switch/gateway/routes.json，而不是某个 target 的目录下。
+ * 若共享目录尚无路由表但旧位置有，则读旧位置（平滑迁移）。
+ */
 export function routesFile(root: string): string {
-  return path.join(dataDir(root), 'routes.json');
+  const shared = path.join(gatewayDataDir(), 'routes.json');
+  if (exists(shared)) return shared;
+  const legacyShared = path.join(dataDir(root), 'routes.json');
+  if (exists(legacyShared)) return legacyShared;
+  return shared;
 }
 
 /** 读路由表；不存在则返回空表（端口默认） */

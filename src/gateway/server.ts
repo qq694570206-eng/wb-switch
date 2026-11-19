@@ -19,6 +19,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { readRoutes, resolveBackends, deriveImagesUrl, type RouteEntry, type ResolvedBackend } from './routes.js';
+import { dataDir } from '../paths.js';
+import { responsesToChat, chatToResponses, ChatToResponsesStreamer } from './responses.js';
 import { BackendHealthTable, DEFAULT_HEALTH_CONFIG } from './health.js';
 
 export interface GatewayOptions {
@@ -73,7 +75,7 @@ export function startGatewayServer(options: GatewayOptions): Promise<http.Server
     const bootRoutes = readRoutes(root);
     const port = options.port ?? bootRoutes.port;
     const host = options.host ?? '127.0.0.1';
-    const logDir = options.logDir ?? path.join(root, 'wb-switch', 'logs');
+    const logDir = options.logDir ?? path.join(dataDir(root), 'logs');
     fs.mkdirSync(logDir, { recursive: true });
     const logFile = path.join(logDir, LOG_NAME);
 
@@ -166,8 +168,10 @@ export function startGatewayServer(options: GatewayOptions): Promise<http.Server
       }
 
       const isChat = req.method === 'POST' && (url.endsWith('/chat/completions') || url.endsWith('/completions'));
+      // Codex 只发 /v1/responses；网关把它翻译成上游的 chat/completions
+      const isResponses = req.method === 'POST' && url.endsWith('/responses');
       const isImages = req.method === 'POST' && (url.endsWith('/images/generations') || url.endsWith('/images/edits'));
-      if (!isChat && !isImages) {
+      if (!isChat && !isResponses && !isImages) {
         res.writeHead(404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: `wb-gateway: 不支持的路径 ${url}` } }));
         return;
@@ -199,6 +203,24 @@ export function startGatewayServer(options: GatewayOptions): Promise<http.Server
           error: { message: `wb-gateway: 未知模型 "${model}"。可用：${[...routeMap.keys()].sort().join(', ')}` },
         }));
         return;
+      }
+
+      // ── Codex / 原生 responses 客户端：翻译成上游 chat 请求 ──
+      // Codex 只支持 wire_api=responses，而多数中转站只有 chat/completions。
+      // 网关在这一层双向转换，使任意 chat 上游都能给 Codex 用。
+      let responsesCtx: { model: string; stream: boolean } | null = null;
+      if (isResponses) {
+        let parsed: Record<string, unknown>;
+        try {
+          parsed = JSON.parse(body.toString('utf8')) as Record<string, unknown>;
+        } catch {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: 'body 不是合法 JSON' } }));
+          return;
+        }
+        const conv = responsesToChat(parsed);
+        responsesCtx = { model, stream: conv.stream };
+        body = Buffer.from(JSON.stringify(conv.payload), 'utf8');
       }
 
       // ── 图片模型的 chat 适配：把 chat 请求翻译成 images 请求 ──
@@ -293,7 +315,7 @@ export function startGatewayServer(options: GatewayOptions): Promise<http.Server
               imagesMode,
               wrapAsChat: route.kind === 'image' && isChat,
               alias: route.alias,
-            });
+            }, responsesCtx);
             if (result.outcome === 'ok') {
               health.recordOk(bKey, Date.now() - started);
               attemptsLog.push(`${bKey}:ok`);
@@ -373,6 +395,7 @@ export function startGatewayServer(options: GatewayOptions): Promise<http.Server
       attempt: number,
       writeLog: (l: LogLine) => void,
       imagesCtx?: ImagesContext,
+      responsesCtx?: { model: string; stream: boolean } | null,
     ): Promise<ForwardResult> {
       // 图片请求：端点从 chat url 换成 images/generations|edits
       let target = new URL(backend.url);
@@ -487,6 +510,101 @@ export function startGatewayServer(options: GatewayOptions): Promise<http.Server
                 try {
                   res.writeHead(502, { 'Content-Type': 'application/json' });
                   res.end(JSON.stringify({ error: { message: `wb-gateway: 图片上游中断：${err.message}`, rid } }));
+                } catch { /* ignore */ }
+                finish({ outcome: 'ok' });
+              });
+              return;
+            }
+
+            // ── responses 客户端：把上游 chat 响应翻译回 responses 格式 ──
+            if (responsesCtx) {
+              const chunks: Buffer[] = [];
+              upstreamRes.on('data', (c: Buffer) => chunks.push(c));
+              upstreamRes.on('end', () => {
+                const raw = Buffer.concat(chunks).toString('utf8');
+                if (process.env.WB_GW_DEBUG) {
+                  // eslint-disable-next-line no-console
+                  console.error(
+                    `[responses-debug] stream=${responsesCtx.stream} bytes=${raw.length} head=${JSON.stringify(raw.slice(0, 120))}`,
+                  );
+                }
+                try {
+                  if (responsesCtx.stream) {
+                    // 上游是 chat SSE：逐行解析并转成 responses 事件
+                    const streamer = new ChatToResponsesStreamer(String(backend.model));
+                    let out = '';
+                    let sawSse = false;
+                    for (const line of raw.split(/\r?\n/)) {
+                      const t = line.trim();
+                      if (!t.startsWith('data:')) continue;
+                      sawSse = true;
+                      const payload = t.slice(5).trim();
+                      if (!payload || payload === '[DONE]') continue;
+                      try {
+                        out += streamer.feed(JSON.parse(payload) as Record<string, unknown>);
+                      } catch {
+                        /* 跳过坏 chunk */
+                      }
+                    }
+                    // 上游忽略了 stream 参数、直接返回普通 JSON：这里补偿，
+                    // 用同一条响应喂给 streamer 生成完整事件序列
+                    if (!sawSse) {
+                      try {
+                        const chat = JSON.parse(raw) as Record<string, unknown>;
+                        const choices = Array.isArray(chat.choices)
+                          ? (chat.choices as Record<string, unknown>[])
+                          : [];
+                        const msg = (choices[0]?.message ?? {}) as Record<string, unknown>;
+                        streamer.feed({
+                          choices: [
+                            {
+                              delta: {
+                                content: typeof msg.content === 'string' ? msg.content : '',
+                                tool_calls: msg.tool_calls,
+                              },
+                            },
+                          ],
+                        });
+                        out += streamer.end(chat.usage as Record<string, unknown> | undefined);
+                      } catch {
+                        out += streamer.end();
+                      }
+                    } else {
+                      out += streamer.end();
+                    }
+                    res.writeHead(200, {
+                      'Content-Type': 'text/event-stream; charset=utf-8',
+                      'Cache-Control': 'no-cache',
+                      Connection: 'keep-alive',
+                    });
+                    res.end(out);
+                  } else {
+                    const chat = JSON.parse(raw) as Record<string, unknown>;
+                    const conv = chatToResponses(chat, String(backend.model));
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify(conv));
+                  }
+                } catch (err) {
+                  try {
+                    res.writeHead(502, { 'Content-Type': 'application/json' });
+                    res.end(
+                      JSON.stringify({
+                        error: { message: `wb-gateway: 协议转换失败：${(err as Error).message}`, rid },
+                      }),
+                    );
+                  } catch { /* ignore */ }
+                }
+                writeLog({
+                  ts: now(), rid, alias, backend: backendLabel, status,
+                  ms: Date.now() - started, bytes: Buffer.byteLength(raw),
+                  outcome: 'ok', failed: 'responses-converted',
+                });
+                finish({ outcome: 'ok' });
+              });
+              upstreamRes.on('error', err => {
+                try {
+                  res.writeHead(502, { 'Content-Type': 'application/json' });
+                  res.end(JSON.stringify({ error: { message: `wb-gateway: 上游中断：${err.message}`, rid } }));
                 } catch { /* ignore */ }
                 finish({ outcome: 'ok' });
               });
