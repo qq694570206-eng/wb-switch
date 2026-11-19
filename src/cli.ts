@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * wb-switch —— WorkBuddy 模型源切换工具（Windows / macOS / Linux 通用）
+ * wb-switch —— 通用模型源切换工具（WorkBuddy / Codex，Windows / macOS / Linux）
  *
  * 用法速览：
  *   wb-switch                      交互式选择并切换
@@ -255,7 +255,7 @@ function printHelp(): void {
   const b = (s: string) => c.bold(s);
   const g = (s: string) => c.gray(s);
   process.stdout.write(`
-${b('wb-switch')} ${g(`v${VERSION}`)} — WorkBuddy 模型源切换工具
+${b('wb-switch')} ${g(`v${VERSION}`)} — 模型源切换（WorkBuddy / Codex）
 
 ${b('用法')}
   wb-switch                        ${g('交互式选择源并立即切换')}

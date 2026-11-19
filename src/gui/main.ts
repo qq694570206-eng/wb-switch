@@ -301,7 +301,7 @@ function buildTray(): void {
     return;
   }
   tray = new Tray(icon);
-  tray.setToolTip('wb-switch · WorkBuddy 模型源切换');
+  tray.setToolTip('wb-switch · 模型源切换');
 
   // 托盘菜单：显示窗口 + 源列表（点击切源）+ 退出
   function refreshTrayMenu(): void {
