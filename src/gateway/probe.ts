@@ -124,7 +124,9 @@ export async function probeModel(url: string, apiKey: string, modelId: string, t
     if (res.status === 429) {
       const quotaHit = /quota|balance|insufficient|exceeded_current_quota|billing|recharge|欠费|余额/i.test(res.body);
       if (quotaHit) {
-        return { status: 'fail', code: 429, reason: '配额/余额不足', testedAt };
+        // 配额耗尽≠不可用：鉴权已通过，说明 URL/Key/模型都对，只是这窗口没额度了。
+        // 标记 degraded 让组合创建/入组放行（网关侧还有多源 fallback 兜底）。
+        return { status: 'degraded', code: 429, reason: '配额/余额不足（鉴权已通过，稍后重试或换源）', testedAt };
       }
       return { status: 'degraded', code: 429, reason: '限流中（鉴权与模型均验证通过）', testedAt };
     }

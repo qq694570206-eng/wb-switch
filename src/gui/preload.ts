@@ -75,6 +75,8 @@ const api = {
   imageEdit: (input: unknown) => ipcRenderer.invoke('wb:imageEdit', input),
   mcpStatus: () => ipcRenderer.invoke('wb:mcpStatus'),
   mcpInstall: () => ipcRenderer.invoke('wb:mcpInstall'),
+  gatewayStart: () => ipcRenderer.invoke('wb:gatewayStart'),
+  gatewayRestart: () => ipcRenderer.invoke('wb:gatewayRestart'),
   onTraySwitched: (cb: (name: string) => void) => {
     ipcRenderer.on('wb:tray-switched', (_e, name: string) => cb(name));
   },

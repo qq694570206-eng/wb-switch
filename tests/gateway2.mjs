@@ -293,7 +293,7 @@ async function post(model, opts = {}) {
   const r429rate = await probeModel(probeModelUrl, '', 'm');
   check('探测：429+Retry-After → degraded（限流降级通过）', r429rate.status === 'degraded', JSON.stringify(r429rate));
   const r429quota = await probeModel(`http://127.0.0.1:${pQuota}/v1/chat/completions`, '', 'm');
-  check('探测：429+余额 → fail', r429quota.status === 'fail');
+  check('探测：429+余额 → degraded（鉴权已过，组合入组放行）', r429quota.status === 'degraded');
   const r401 = await probeModel(`http://127.0.0.1:${p401}/v1/chat/completions`, '', 'm');
   check('探测：401 → fail', r401.status === 'fail');
   const rOk = await probeModel(`http://127.0.0.1:${pA}/v1/chat/completions`, '', 'm');

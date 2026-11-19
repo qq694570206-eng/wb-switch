@@ -2277,6 +2277,20 @@
     $('#btnComboRefresh').onclick = () => void loadCombos();
     $('#btnComboNew').onclick = () => openComboNewModal();
     $('#btnImageRefresh').onclick = () => void loadImage();
+    $('#btnGwStart').onclick = () => {
+      void guarded(async () => {
+        const r = await call(api.gatewayStart());
+        toast(r.ok ? 'ok' : 'err', r.message);
+        await loadImage();
+      });
+    };
+    $('#btnGwRestart').onclick = () => {
+      void guarded(async () => {
+        const r = await call(api.gatewayRestart());
+        toast(r.ok ? 'ok' : 'err', r.message);
+        await loadImage();
+      });
+    };
     $('#btnMcpInstall').onclick = () => {
       void guarded(async () => {
         mcpCache = await call(api.mcpInstall());
@@ -2862,6 +2876,21 @@
     if (!imageCache) return;
     $('#imgRouteCount').textContent = imageCache.routes.length;
     $('#imgModelCount').textContent = imageCache.models.length;
+
+    // 网关状态卡：真实探活结果 + 端口
+    const gwTitle = $('#gwTitle');
+    const gwSub = $('#gwSub');
+    if (gwTitle && gwSub) {
+      const running = Boolean(imageCache.gatewayRunning);
+      const port = imageCache.gatewayPort || '—';
+      gwTitle.innerHTML =
+        `<span class="mcp-dot ${running ? 'ok' : 'bad'}"></span>` +
+        (running ? '网关运行中' : '网关未运行') +
+        `<span class="mcp-name">127.0.0.1:${esc(port)}</span>`;
+      gwSub.textContent = running
+        ? `图片生成 / MCP 全部经此网关转发 · ${imageCache.routes.length} 条路由`
+        : '点「启动网关」拉起；若提示端口占用，点「重启网关」清理陈旧进程';
+    }
 
     const rl = $('#imageRouteList');
     rl.innerHTML = imageCache.routes.length

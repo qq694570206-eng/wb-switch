@@ -69,6 +69,8 @@ import {
   markImageModel,
   removeComboMemberGui,
   removeImageRoute,
+  restartGateway,
+  startGateway,
 } from './service.js';
 import type { VendorTemplate } from './templates.js';
 import { listProfileNames } from '../profiles.js';
@@ -551,7 +553,7 @@ function registerIpc(): void {
   ipcMain.handle('wb:comboApply', (_e, name: string) => handle(() => applyCombo(name)));
 
   // ── 图片模型 ──
-  ipcMain.handle('wb:imageOverview', () => handle(() => getImageOverview()));
+  ipcMain.handle('wb:imageOverview', () => handleAsync(() => getImageOverview()));
   ipcMain.handle('wb:imageMark', (_e, profile: string, model: string, on: boolean) =>
     handle(() => markImageModel(profile, model, on === true)),
   );
@@ -567,6 +569,10 @@ function registerIpc(): void {
   // MCP 接入：状态查询 / 一键写入 mcp.json
   ipcMain.handle('wb:mcpStatus', () => handle(() => getMcpStatus()));
   ipcMain.handle('wb:mcpInstall', () => handle(() => installMcpConfig()));
+
+  // 网关手动启动 / 重启（图片页兜底操作）
+  ipcMain.handle('wb:gatewayStart', () => handle(() => startGateway()));
+  ipcMain.handle('wb:gatewayRestart', () => handleAsync(() => restartGateway()));
 }
 
 // ─────────────────────────── 生命周期 ───────────────────────────

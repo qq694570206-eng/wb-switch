@@ -56,7 +56,7 @@ import {
   lintCombo,
 } from '../combo.js';
 import { addRoute, readRoutes, removeRoute, validateAlias, type RouteBackend } from '../gateway/routes.js';
-import { getDaemonStatus, startDaemon, pingGateway } from '../gateway/daemon.js';
+import { getDaemonStatus, startDaemon, stopDaemon, pingGateway } from '../gateway/daemon.js';
 
 /** 供 UI 展示的模型条目（含脱敏信息与主机名） */
 export interface ModelView {
@@ -982,8 +982,44 @@ function ensureGatewayRunning(root: string): Promise<number | null> {
   })();
 }
 
+/** 图片页：网关手动启动 / 重启（用户可见的兜底操作） */
+export function startGateway(): { ok: boolean; port: number | null; message: string } {
+  const root = getRoot();
+  try {
+    // 重启语义：先尝试启动；报「已在运行」就 stop 再启动
+    const { port } = startDaemon(root);
+    return { ok: true, port, message: `网关已启动（端口 ${port}）` };
+  } catch (err) {
+    const msg = String((err as Error).message);
+    if (/已在运行/.test(msg)) {
+      return { ok: true, port: getDaemonStatus(root).port, message: `网关已在运行（${msg.match(/pid \d+/)?.[0] ?? ''}）` };
+    }
+    return { ok: false, port: null, message: msg };
+  }
+}
+
+export async function restartGateway(): Promise<{ ok: boolean; port: number | null; message: string }> {
+  const root = getRoot();
+  try {
+    const status = getDaemonStatus(root);
+    if (status.running) await stopDaemon(root);
+  } catch {
+    /* 停不了就硬启 */
+  }
+  try {
+    const { port } = startDaemon(root);
+    for (let i = 0; i < 40; i++) {
+      if (await pingGateway(port)) return { ok: true, port, message: `网关已重启（端口 ${port}）` };
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    return { ok: false, port: null, message: '网关启动超时（6 秒内未探活成功）' };
+  } catch (err) {
+    return { ok: false, port: null, message: String((err as Error).message) };
+  }
+}
+
 /** 图片页签总览：已标记模型 + 图片路由 + 可标记的源/模型清单 */
-export function getImageOverview(): ImageOverview {
+export async function getImageOverview(): Promise<ImageOverview> {
   const root = getRoot();
   const models: ImageModelView[] = [];
   const profiles: { name: string; models: string[] }[] = [];
@@ -1005,7 +1041,17 @@ export function getImageOverview(): ImageOverview {
     .filter((r) => r.kind === 'image')
     .map((r) => ({ alias: r.alias, backends: r.backends.map((b) => ({ profile: b.profile, model: b.model })) }));
   const status = getDaemonStatus(root);
-  return { models, routes, profiles, gatewayPort: status.port ?? file.port ?? null, gatewayRunning: Boolean(status.running) };
+  const port = status.port ?? file.port ?? null;
+  // 不只看 pid：pid 活着也可能是陈旧进程，真实探活才算「在跑」
+  let alive = false;
+  if (port) {
+    try {
+      alive = await pingGateway(port);
+    } catch {
+      alive = false;
+    }
+  }
+  return { models, routes, profiles, gatewayPort: port, gatewayRunning: alive };
 }
 
 /** 标记 / 取消标记源模型为图片模型 */

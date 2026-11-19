@@ -61,6 +61,30 @@ export function pingGateway(port: number, timeoutMs = 1500): Promise<boolean> {
   });
 }
 
+/** 端口是否被监听（TCP 连通性判断，不含 HTTP 语义） */
+function portInUse(port: number): boolean {
+  try {
+    // 同步探测：nc 不一定有，用 node 内置 net 的同步替代 —— 借助 lsof（macOS/Linux）
+    const { execSync } = require('node:child_process') as typeof import('node:child_process');
+    execSync(`lsof -nP -iTCP:${port} -sTCP:LISTEN`, { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 找到占用端口的进程 pid（LISTEN 状态）；找不到返回 null */
+function findPortOwnerPid(port: number): number | null {
+  try {
+    const { execSync } = require('node:child_process') as typeof import('node:child_process');
+    const out = execSync(`lsof -nP -iTCP:${port} -sTCP:LISTEN -t`, { encoding: 'utf8' });
+    const pid = Number.parseInt(out.trim().split('\n')[0] ?? '', 10);
+    return Number.isFinite(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
 export function getDaemonStatus(root: string): DaemonStatus {
   const pid = readPid(root);
   const routes = safeReadRoutes(root);
@@ -95,6 +119,27 @@ export function startDaemon(root: string, options: { port?: number } = {}): { pi
     throw new Error(`网关已在运行（pid ${existing}）。如需重启：wb-switch gateway restart。`);
   }
   const port = options.port ?? routes.port;
+
+  // 端口被占但 pid 文件已陈旧（进程被 kill -9 / 系统重启后残留）：先清掉占用者再拉起，
+  // 否则 spawn 的子进程会 EADDRINUSE 静默失败，GUI 表现为「网关启动不了」。
+  if (portInUse(port)) {
+    const stale = findPortOwnerPid(port);
+    if (stale !== null && stale !== process.pid) {
+      try {
+        process.kill(stale, 'SIGTERM');
+      } catch {
+        /* 杀不掉：下面 bind 失败会给出明确报错 */
+      }
+      // 给旧进程一点退出时间
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline && portInUse(port)) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+      }
+    }
+    if (portInUse(port)) {
+      throw new Error(`端口 ${port} 被其它进程占用，无法启动网关。处理：确认占用者（lsof -iTCP:${port}）后手动结束，或在 routes.json 里换端口。`);
+    }
+  }
 
   const entry = process.argv[1] ?? '';
   const isCli = entry.endsWith('cli.js') || entry.endsWith('wb-switch');
