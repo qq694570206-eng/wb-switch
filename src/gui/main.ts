@@ -57,6 +57,7 @@ import {
   type ProfileDetail,
   type SwitchReport,
 } from './service.js';
+import { detectAbilitiesBatch } from './abilities.js';
 import {
   addComboMemberGui,
   addImageRoute,
@@ -423,6 +424,11 @@ function registerIpc(): void {
 
   ipcMain.handle('wb:composeModels', (_e, input: ComposeModelsInput): Reply<ModelView[]> =>
     handle(() => composeModelsFromRemote(input)),
+  );
+
+  // 模型能力自动识别（拉取面板预览用，与 composeModels 同一套规则）
+  ipcMain.handle('wb:detectAbilities', (_e, ids: string[]): Reply<Record<string, unknown>> =>
+    handle(() => detectAbilitiesBatch(ids)),
   );
 
   // 模板列表 + 从模板组装模型

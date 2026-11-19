@@ -16,7 +16,19 @@ export interface ModelEntry {
   supportsToolCall?: boolean;
   supportsImages?: boolean;
   supportsReasoning?: boolean;
+  /** 仅推理模型（纯思考，不产出可见回答） */
+  onlyReasoning?: boolean;
   useCustomProtocol?: boolean;
+  /** 最大输入 token 数（上下文窗口） */
+  maxInputTokens?: number;
+  /** 最大输出 token 数 */
+  maxOutputTokens?: number;
+  /** 思考强度（reasoning effort）配置：是否支持 + 可选档位 */
+  reasoning?: {
+    /** 支持的思考强度档位，如 ['low','medium','high'] */
+    supportedEfforts?: string[];
+    [key: string]: unknown;
+  };
   /** 保留未知字段，切换时原样写回，避免丢失新版客户端的配置项 */
   [key: string]: unknown;
 }

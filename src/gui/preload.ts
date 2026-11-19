@@ -36,6 +36,7 @@ const api = {
   suggestConnection: (profileName?: string) =>
     ipcRenderer.invoke('wb:suggestConnection', profileName),
   composeModels: (input: unknown) => ipcRenderer.invoke('wb:composeModels', input),
+  detectAbilities: (ids: string[]) => ipcRenderer.invoke('wb:detectAbilities', ids),
   templates: () => ipcRenderer.invoke('wb:templates'),
   composeFromTemplate: (templateId: string, apiKey: string, selectedIds: string[]) =>
     ipcRenderer.invoke('wb:composeFromTemplate', templateId, apiKey, selectedIds),

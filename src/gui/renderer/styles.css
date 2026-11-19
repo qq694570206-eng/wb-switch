@@ -673,6 +673,25 @@ button {
   background: var(--accent-soft);
   color: var(--accent);
 }
+/* 模型卡规格行：上下文/输出 tokens、思考强度档位 */
+.mc-spec {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 7px;
+}
+.mc-spec:empty {
+  display: none;
+}
+.spec-item {
+  font-size: 11px;
+  font-family: var(--mono);
+  padding: 1px 7px;
+  border-radius: var(--radius-xs);
+  border: 1px dashed color-mix(in srgb, var(--ink-3) 40%, transparent);
+  color: var(--ink-2);
+  white-space: nowrap;
+}
 
 /* ───────────────── 空状态 ───────────────── */
 
@@ -1345,6 +1364,21 @@ body.is-busy .btn:not(.icon-btn) {
   color: var(--ink-3);
   white-space: nowrap;
   padding-left: 10px;
+}
+/* 自动识别出的能力标签（拉取列表行右侧） */
+.pr-ability {
+  flex: none;
+  margin-left: 8px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-radius: 4px;
+  padding: 1px 6px;
+  white-space: nowrap;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .pick-empty {

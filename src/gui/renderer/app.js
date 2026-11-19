@@ -92,6 +92,16 @@
     return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   }
 
+  /** token 数人性化：131072 → 128K，1000000 → 1M，1234 → 1.2K */
+  function fmtTokens(n) {
+    if (!Number.isFinite(n) || n <= 0) return String(n);
+    if (n >= 1_000_000 && n % 1_000_000 === 0) return `${n / 1_000_000}M`;
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+    if (n >= 1024 && n % 1024 === 0) return `${n / 1024}K`;
+    if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
+    return String(n);
+  }
+
   // ───────────────────────── Toast ─────────────────────────
 
   function toast(kind, text, hint) {
@@ -407,6 +417,13 @@
               `<span class="chip${m[k] ? ' on' : ''}">${label}${m[k] ? '' : ' 关'}</span>`,
           )
           .join('');
+        if (m.onlyReasoning) chips += '<span class="chip on">仅推理</span>';
+        const spec = [];
+        if (m.maxInputTokens) spec.push(`上下文 ${fmtTokens(m.maxInputTokens)}`);
+        if (m.maxOutputTokens) spec.push(`输出 ${fmtTokens(m.maxOutputTokens)}`);
+        if (Array.isArray(m.reasoningEfforts) && m.reasoningEfforts.length) {
+          spec.push(`思考强度 ${m.reasoningEfforts.join('/')}`);
+        }
         return `<div class="model-card">
           <div class="mc-head">
             <span class="mc-name">${esc(m.name || m.id)}</span>
@@ -432,6 +449,7 @@
             </div>
           </div>
           <div class="chips">${chips}</div>
+          ${spec.length ? `<div class="mc-spec">${spec.map((s) => `<span class="spec-item">${esc(s)}</span>`).join('')}</div>` : ''}
         </div>`;
       })
       .join('')
@@ -987,6 +1005,7 @@
     ['supportsImages', '图像'],
     ['supportsReasoning', '推理'],
     ['useCustomProtocol', '自定义协议'],
+    ['onlyReasoning', '仅推理'],
   ];
 
   function blankModel() {
@@ -1002,6 +1021,10 @@
       supportsImages: false,
       supportsReasoning: false,
       useCustomProtocol: false,
+      onlyReasoning: false,
+      maxInputTokens: null,
+      maxOutputTokens: null,
+      reasoningEfforts: null,
       extra: {},
     };
   }
@@ -1012,6 +1035,7 @@
         <input type="checkbox" data-i="${i}" data-f="${k}" ${m[k] ? 'checked' : ''} />${label}
       </label>`,
     ).join('');
+    const tokVal = (v) => (v == null ? '' : String(v));
     return `<div class="editor-block" draggable="true" data-idx="${i}">
       <div class="eb-head">
         <span class="eb-drag" title="拖拽排序">⣿</span>
@@ -1043,6 +1067,20 @@
           <label class="form-label">供应商</label>
           <input class="input" data-i="${i}" data-f="vendor" value="${esc(m.vendor)}" placeholder="Custom" />
         </div>
+      </div>
+      <div class="grid-2">
+        <div class="form-row">
+          <label class="form-label">最大输入 tokens</label>
+          <input class="input mono" type="number" min="0" step="1" data-i="${i}" data-f="maxInputTokens" value="${esc(tokVal(m.maxInputTokens))}" placeholder="如 131072，留空不写入" />
+        </div>
+        <div class="form-row">
+          <label class="form-label">最大输出 tokens</label>
+          <input class="input mono" type="number" min="0" step="1" data-i="${i}" data-f="maxOutputTokens" value="${esc(tokVal(m.maxOutputTokens))}" placeholder="如 32768，留空不写入" />
+        </div>
+      </div>
+      <div class="form-row">
+        <label class="form-label">思考强度档位</label>
+        <input class="input mono" data-i="${i}" data-f="reasoningEfforts" value="${esc(Array.isArray(m.reasoningEfforts) ? m.reasoningEfforts.join(',') : '')}" placeholder="如 low,medium,high（逗号分隔，留空不写入）" />
       </div>
       <div class="checks">${flags}</div>
     </div>`;
@@ -1102,7 +1140,21 @@
       const i = Number(t.dataset.i);
       const f = t.dataset.f;
       if (!Number.isInteger(i) || !f) return;
-      list[i][f] = t.type === 'checkbox' ? t.checked : t.value;
+      if (t.type === 'checkbox') {
+        list[i][f] = t.checked;
+        return;
+      }
+      if (f === 'maxInputTokens' || f === 'maxOutputTokens') {
+        const v = t.value.trim();
+        list[i][f] = v === '' ? null : Number(v);
+        return;
+      }
+      if (f === 'reasoningEfforts') {
+        const v = t.value.trim();
+        list[i][f] = v === '' ? null : v.split(/[,，\s]+/).map((x) => x.trim()).filter(Boolean);
+        return;
+      }
+      list[i][f] = t.value;
     });
 
     wrap.addEventListener('click', (e) => {
@@ -1196,6 +1248,11 @@
             <label class="switch-line"><input type="checkbox" data-flag="supportsImages" />图像</label>
             <label class="switch-line"><input type="checkbox" data-flag="supportsReasoning" />推理</label>
           </div>
+          <div class="checks" style="margin-top:6px">
+            <label class="switch-line" title="按模型名自动推断推理/图像/仅推理/思考强度档位，识别错的可在编辑页手动改">
+              <input type="checkbox" id="fmAuto" checked />自动识别能力（推理 / 图像 / 思考强度）
+            </label>
+          </div>
         </div>
         <div class="fetch-right">
           <div class="picker" id="fmPicker">
@@ -1228,6 +1285,8 @@
     let keyword = '';
     let touched = false;
     let endpoint = '';
+    /** 自动识别出的能力（id → 能力摘要），列表行右侧预览用 */
+    let abilities = {};
 
     const setStatus = (kind, text) => {
       statusEl.className = `fetch-status ${kind || ''}`;
@@ -1262,11 +1321,22 @@
       }
       listEl.innerHTML = rows
         .map(
-          (m) => `<label class="pick-row${chosen.has(m.id) ? ' on' : ''}" data-id="${esc(m.id)}">
+          (m) => {
+            const a = abilities[m.id];
+            const tags = [];
+            if (a) {
+              if (a.supportsReasoning) tags.push('推理');
+              if (a.supportsImages) tags.push('图像');
+              if (a.onlyReasoning) tags.push('仅推理');
+              if (Array.isArray(a.reasoningEfforts) && a.reasoningEfforts.length) tags.push(a.reasoningEfforts.join('/'));
+            }
+            return `<label class="pick-row${chosen.has(m.id) ? ' on' : ''}" data-id="${esc(m.id)}">
             <input type="checkbox"${chosen.has(m.id) ? ' checked' : ''} />
             <span class="pr-id">${esc(m.id)}</span>
             ${m.owner ? `<span class="pr-owner">${esc(m.owner)}</span>` : ''}
-          </label>`,
+            ${tags.length ? `<span class="pr-ability">${esc(tags.join(' · '))}</span>` : ''}
+          </label>`;
+          },
         )
         .join('');
       updateCount();
@@ -1339,6 +1409,17 @@
         all.forEach((m) => chosen.add(m.id));
         keyword = '';
         searchEl.value = '';
+        // 自动识别能力并标注到列表行（识别开关关掉时不显示）
+        try {
+          const auto = q('#fmAuto');
+          if (!auto || auto.checked) {
+            abilities = await call(api.detectAbilities(all.map((m) => m.id)));
+          } else {
+            abilities = {};
+          }
+        } catch {
+          abilities = {}; // 识别失败不影响拉取流程
+        }
         renderList();
         setStatus('ok', `已获取 ${all.length} 个模型 · ${r.elapsedMs} ms`);
         statusEl.title = `端点：${r.endpoint}`;
@@ -1413,6 +1494,11 @@
           out[cb.dataset.flag] = cb.checked;
         });
         return out;
+      },
+      /** 自动识别开关状态（默认开） */
+      autoDetect: () => {
+        const cb = el.querySelector('#fmAuto');
+        return !cb || cb.checked;
       },
       summary: () => ({ total: all.length, selected: chosen.size, endpoint }),
     };
@@ -1774,6 +1860,7 @@
               vendor: conn.vendor,
               ids: fetchPanel.selectedIds(),
               flags: fetchPanel.flags(),
+              autoDetect: fetchPanel.autoDetect(),
             }),
           );
           r = await call(api.createManual({ name, description: desc, models }));
@@ -1957,6 +2044,7 @@
           vendor: conn.vendor,
           ids: fresh,
           flags: appendPanel.flags(),
+          autoDetect: appendPanel.autoDetect(),
         }),
       );
       editor.append(models);

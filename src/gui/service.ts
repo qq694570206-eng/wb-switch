@@ -45,6 +45,7 @@ import {
   switchTo,
 } from '../switcher.js';
 import { chatEndpointOf, fetchModels, type FetchModelsResult } from './modelFetch.js';
+import { detectAbilities } from './abilities.js';
 import { VENDOR_TEMPLATES, findTemplate, type VendorTemplate, type TemplateModel } from './templates.js';
 import {
   createCombo,
@@ -72,6 +73,14 @@ export interface ModelView {
   supportsImages: boolean;
   supportsReasoning: boolean;
   useCustomProtocol: boolean;
+  /** 仅推理模型（纯思考不产出可见回答） */
+  onlyReasoning: boolean;
+  /** 最大输入 token 数；null = 未配置 */
+  maxInputTokens: number | null;
+  /** 最大输出 token 数；null = 未配置 */
+  maxOutputTokens: number | null;
+  /** 支持的思考强度档位；null = 未配置 */
+  reasoningEfforts: string[] | null;
   /** 未知字段，编辑时原样保留 */
   extra: Record<string, unknown>;
 }
@@ -152,11 +161,24 @@ export function toModelView(m: ModelEntry): ModelView {
     'supportsImages',
     'supportsReasoning',
     'useCustomProtocol',
+    'onlyReasoning',
+    'maxInputTokens',
+    'maxOutputTokens',
+    'reasoning',
   ]);
   const extra: Record<string, unknown> = {};
   for (const k of Object.keys(m)) {
     if (!known.has(k)) extra[k] = m[k];
   }
+  // reasoning 对象里除 supportedEfforts 外的字段也原样保留
+  if (m.reasoning && typeof m.reasoning === 'object') {
+    const rest = { ...(m.reasoning as Record<string, unknown>) };
+    delete rest.supportedEfforts;
+    if (Object.keys(rest).length) extra.reasoningRest = rest;
+  }
+  const efforts = Array.isArray(m.reasoning?.supportedEfforts)
+    ? m.reasoning!.supportedEfforts!.filter((x): x is string => typeof x === 'string' && !!x)
+    : null;
   return {
     id: String(m.id ?? ''),
     name: String(m.name ?? m.id ?? ''),
@@ -169,6 +191,10 @@ export function toModelView(m: ModelEntry): ModelView {
     supportsImages: m.supportsImages === true,
     supportsReasoning: m.supportsReasoning === true,
     useCustomProtocol: m.useCustomProtocol === true,
+    onlyReasoning: m.onlyReasoning === true,
+    maxInputTokens: typeof m.maxInputTokens === 'number' && Number.isFinite(m.maxInputTokens) ? m.maxInputTokens : null,
+    maxOutputTokens: typeof m.maxOutputTokens === 'number' && Number.isFinite(m.maxOutputTokens) ? m.maxOutputTokens : null,
+    reasoningEfforts: efforts && efforts.length ? efforts : null,
     extra,
   };
 }
@@ -183,7 +209,8 @@ export function maskKeyGui(key: string): string {
 
 /** 把 UI 编辑后的模型视图转回 models.json 结构 */
 export function fromModelView(v: ModelView): ModelEntry {
-  const out: ModelEntry = { ...(v.extra ?? {}), id: v.id.trim() } as ModelEntry;
+  const { reasoningRest, ...restExtra } = v.extra ?? {};
+  const out: ModelEntry = { ...restExtra, id: v.id.trim() } as ModelEntry;
   if (v.name.trim()) out.name = v.name.trim();
   if (v.vendor.trim()) out.vendor = v.vendor.trim();
   if (v.url.trim()) out.url = v.url.trim();
@@ -192,6 +219,19 @@ export function fromModelView(v: ModelView): ModelEntry {
   out.supportsImages = v.supportsImages;
   out.supportsReasoning = v.supportsReasoning;
   out.useCustomProtocol = v.useCustomProtocol;
+  if (v.onlyReasoning) out.onlyReasoning = true;
+  if (v.maxInputTokens != null && Number.isFinite(v.maxInputTokens)) out.maxInputTokens = v.maxInputTokens;
+  if (v.maxOutputTokens != null && Number.isFinite(v.maxOutputTokens)) out.maxOutputTokens = v.maxOutputTokens;
+  const efforts = (v.reasoningEfforts ?? []).map((x) => x.trim()).filter(Boolean);
+  if (efforts.length) {
+    const r: ModelEntry['reasoning'] = {};
+    if (reasoningRest && typeof reasoningRest === 'object') Object.assign(r, reasoningRest);
+    r.supportedEfforts = efforts;
+    out.reasoning = r;
+  } else if (reasoningRest && typeof reasoningRest === 'object' && Object.keys(reasoningRest).length) {
+    // 没有 efforts 但 reasoning 里还有别的配置，原样保留
+    out.reasoning = reasoningRest as ModelEntry['reasoning'];
+  }
   return out;
 }
 
@@ -447,6 +487,8 @@ export interface ComposeModelsInput {
     supportsReasoning?: boolean;
     useCustomProtocol?: boolean;
   };
+  /** 自动识别能力（按模型名推断推理/图像/纯思考/思考档位）；默认 true */
+  autoDetect?: boolean;
 }
 
 /** 把「网关 + 勾选的 id」组装成可写入 models.json 的模型列表 */
@@ -455,22 +497,26 @@ export function composeModelsFromRemote(input: ComposeModelsInput): ModelView[] 
   const vendor = (input.vendor || 'Custom').trim() || 'Custom';
   const apiKey = input.apiKey.trim();
   const f = input.flags ?? {};
+  const auto = input.autoDetect !== false;
   return input.ids
     .map((id) => id.trim())
     .filter(Boolean)
-    .map((id) =>
-      toModelView({
+    .map((id) => {
+      const a = auto ? detectAbilities(id) : null;
+      return toModelView({
         id,
         name: id,
         vendor,
         url: chatUrl,
         apiKey,
-        supportsToolCall: f.supportsToolCall ?? true,
-        supportsImages: f.supportsImages ?? false,
-        supportsReasoning: f.supportsReasoning ?? false,
+        supportsToolCall: a ? a.supportsToolCall : (f.supportsToolCall ?? true),
+        supportsImages: a ? a.supportsImages : (f.supportsImages ?? false),
+        supportsReasoning: a ? a.supportsReasoning : (f.supportsReasoning ?? false),
+        onlyReasoning: a ? a.onlyReasoning : false,
         useCustomProtocol: f.useCustomProtocol ?? false,
-      }),
-    );
+        reasoning: a?.reasoningEfforts?.length ? { supportedEfforts: a.reasoningEfforts } : undefined,
+      });
+    });
 }
 
 /** 把模板的模型列表 + Key 组装成 ModelView[]（保留每模型的默认能力） */
