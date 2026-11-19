@@ -87,16 +87,16 @@ fs.writeFileSync(path.join(ROOT, 'models-b.json'), JSON.stringify(modelJsonB));
 
 run(['init', 'upA']);
 run(['add', 'upB', '--from', path.join(ROOT, 'models-b.json')]);
-run(['add', 'upDead', '--url', `http://127.0.0.1:${portDead}/v1/chat/completions`, '--key', 'sk-dead', '--model', 'glm-4.7']);
+run(['add', 'upDead', '--url', `http://127.0.0.1:${portDead}/v1/chat/completions`, '--key', 'sk-dead', '--model', 'glm-4.7', '--no-test']);
 
 // ── 配置路由 ──
 
 // 路由 1：正常转发（单后端）
-run(['gateway', 'route', 'add', 'glm-4.7', '--profile', 'upA', '--model', 'glm-4.7']);
+run(['gateway', 'route', 'add', 'glm-4.7', '--no-test', '--profile', 'upA', '--model', 'glm-4.7']);
 // 路由 2：失败转移（dead → B）
-run(['gateway', 'route', 'add', 'glm-fallback', '--profile', 'upDead', '--model', 'glm-4.7', '--profile2', 'upB', '--model2', 'glm-4.7b']);
+run(['gateway', 'route', 'add', 'glm-fallback', '--no-test', '--profile', 'upDead', '--model', 'glm-4.7', '--profile2', 'upB', '--model2', 'glm-4.7b']);
 // 路由 3：B → dead（第一个成功）
-run(['gateway', 'route', 'add', 'glm-bfirst', '--profile', 'upB', '--model', 'glm-4.7b', '--profile2', 'upDead', '--model2', 'glm-4.7']);
+run(['gateway', 'route', 'add', 'glm-bfirst', '--no-test', '--profile', 'upB', '--model', 'glm-4.7b', '--profile2', 'upDead', '--model2', 'glm-4.7']);
 
 const routesJson = JSON.parse(fs.readFileSync(path.join(ROOT, 'wb-switch', 'routes.json'), 'utf8'));
 check('routes.json 有 3 条路由', routesJson.routes.length === 3);

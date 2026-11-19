@@ -68,6 +68,7 @@ import { cmdGateway } from './gateway/cli.js';
 import { cmdCombo, cmdAppend } from './combo-cli.js';
 import { loadProfile } from './profiles.js';
 import { useCombo, type ConflictPolicy } from './appender.js';
+import { probeProvider, probeModel, updateHealth, readHealth, type ProbeResult } from './gateway/probe.js';
 import {
   c,
   confirm,
@@ -85,7 +86,7 @@ import {
   warn,
 } from './ui.js';
 
-const VERSION = '1.9.0';
+const VERSION = '2.0.0';
 
 /** 超过这个模型数，切换时给出醒目提醒（不硬拦，只提醒） */
 const MODEL_COUNT_WARN = 50;
@@ -874,6 +875,23 @@ async function cmdAdd(a: Args): Promise<number> {
       vendor: vendor ?? 'Custom',
       name: modelId ?? realName,
     });
+    // 连通性测试（L2：GET /v1/models）——默认开启，--no-test 跳过，--force 失败仍保存
+    if (!has(a, 'no-test')) {
+      const probe = await runProviderProbe(url, key ?? '');
+      if (probe.status === 'fail' && !has(a, 'force')) {
+        fail(`连通性测试未通过：${probe.reason}`);
+        process.stderr.write(`  ${c.gray('地址')} ${url}\n`);
+        process.stderr.write(`  ${c.gray('处理')} 检查地址/密钥后重试；确认可用加 --force 强制保存；跳过测试用 --no-test\n`);
+        return ExitCode.CONFIG;
+      }
+      if (probe.status !== 'fail') {
+        updateHealth(r, `provider:${realName}`, probe);
+        info(`连通性测试${probe.status === 'degraded' ? '（限流中，降级通过）' : '通过'}${probe.models !== undefined ? ` · ${probe.models} 个模型` : ''}`);
+      } else if (has(a, 'force')) {
+        updateHealth(r, `provider:${realName}`, probe);
+        warn(`连通性测试失败（${probe.reason}），已按 --force 保存（标记未验证）`);
+      }
+    }
     return finishAdd(a, r, {
       name: realName,
       description,
@@ -922,6 +940,80 @@ async function cmdAdd(a: Args): Promise<number> {
   });
 }
 
+/** health check [源名|组合名]：复测连通性并刷新 health.json 缓存 */
+async function cmdHealth(a: Args): Promise<number> {
+  const r = requireRoot(a);
+  const target = a.positional[1];
+
+  if (target) {
+    // 单目标：源 → L2 + 各模型 L3；组合 → 各成员 L3
+    let profile: Profile;
+    try {
+      profile = loadProfile(r, target);
+    } catch (err) {
+      fail((err as Error).message);
+      return 1;
+    }
+
+    if (profile.type === 'combo' && profile.combo) {
+      info(`复测组合「${profile.name}」的 ${profile.combo.length} 个成员 …`);
+      let allPass = true;
+      for (const m of profile.combo) {
+        for (const s of m.sources) {
+          const src = loadProfile(r, s.profile);
+          const entry = src.models.find(x => x.id === s.model);
+          if (!entry?.url) continue;
+          const res = await probeModel(entry.url, String(entry.apiKey ?? ''), s.model);
+          updateHealth(r, `${s.profile}/${s.model}`, res);
+          const mark = res.status === 'pass' ? c.green('✓') : res.status === 'degraded' ? c.yellow('△') : c.red('✗');
+          process.stdout.write(`  ${mark} ${s.profile}/${s.model} — ${res.reason}\n`);
+          if (res.status === 'fail') allPass = false;
+        }
+      }
+      return allPass ? ExitCode.OK : 1;
+    }
+
+    // 普通源：L2 + 每个模型 L3
+    const first = profile.models[0];
+    if (!first?.url) {
+      fail(`源「${profile.name}」没有可测试的模型条目（缺 url）。`);
+      return 1;
+    }
+    info(`复测源「${profile.name}」：连通性 + ${profile.models.length} 个模型 …`);
+    const l2 = await runProviderProbe(first.url, String(first.apiKey ?? ''));
+    updateHealth(r, `provider:${profile.name}`, l2);
+    const mark = l2.status === 'pass' ? c.green('✓') : c.red('✗');
+    process.stdout.write(`  ${mark} 连通性 — ${l2.reason}${l2.models !== undefined ? ` · ${l2.models} 个模型` : ''}\n`);
+    let allPass = l2.status !== 'fail';
+    for (const m of profile.models) {
+      if (!m.url) continue;
+      const res = await probeModel(m.url, String(m.apiKey ?? ''), m.id);
+      updateHealth(r, `${profile.name}/${m.id}`, res);
+      const mk = res.status === 'pass' ? c.green('✓') : res.status === 'degraded' ? c.yellow('△') : c.red('✗');
+      process.stdout.write(`  ${mk} ${m.id} — ${res.reason}\n`);
+      if (res.status === 'fail') allPass = false;
+    }
+    return allPass ? ExitCode.OK : 1;
+  }
+
+  // 无目标：读缓存全量展示
+  const cache = readHealth(r);
+  const keys = Object.keys(cache);
+  if (keys.length === 0) {
+    info('还没有任何连通性测试记录。');
+    process.stdout.write(`  ${c.gray('测试')} wb-switch health check <源名|组合名>\n`);
+    return 0;
+  }
+  heading(`连通性记录（${keys.length} 条 · 缓存 1h）`);
+  for (const k of keys.sort()) {
+    const e = cache[k]!;
+    const mark = e.status === 'pass' ? c.green('✓') : e.status === 'degraded' ? c.yellow('△') : c.red('✗');
+    const age = Math.round((Date.now() - Date.parse(e.testedAt)) / 60000);
+    process.stdout.write(`  ${mark} ${k} — ${e.reason} ${c.gray(`${age} 分钟前`)}\n`);
+  }
+  return 0;
+}
+
 function buildEntry(input: { id: string; name: string; url: string; apiKey: string; vendor: string }): ModelEntry {
   if (!/^https?:\/\//i.test(input.url)) {
     throw new UsageError(`接口地址不合法：${input.url}`, '需以 https:// 开头。');
@@ -937,6 +1029,27 @@ function buildEntry(input: { id: string; name: string; url: string; apiKey: stri
     supportsReasoning: false,
     useCustomProtocol: false,
   };
+}
+
+/** L2 探测（add 命令用） */
+async function runProviderProbe(url: string, apiKey: string): Promise<ProbeResult> {
+  const modelsUrl = url.replace(/\/chat\/completions.*$/, '').replace(/\/+$/, '') + '/models';
+  process.stdout.write(`  ${c.gray('测试连通性')} GET ${modelsUrl} …\n`);
+  try {
+    return await probeProvider(url, apiKey);
+  } catch (err) {
+    return { status: 'fail', code: 0, reason: (err as Error).message, testedAt: new Date().toISOString() };
+  }
+}
+
+/** L3 探测（combo add / route add 用）：对目标模型发 max_tokens=1 请求 */
+async function runModelProbe(url: string, apiKey: string, modelId: string): Promise<ProbeResult> {
+  process.stdout.write(`  ${c.gray('测试模型')} POST ${modelId} (max_tokens=1) …\n`);
+  try {
+    return await probeModel(url, apiKey, modelId);
+  } catch (err) {
+    return { status: 'fail', code: 0, reason: (err as Error).message, testedAt: new Date().toISOString() };
+  }
 }
 
 function finishAdd(a: Args, r: string, profile: Profile): number {
@@ -1690,6 +1803,8 @@ async function main(argv: string[]): Promise<number> {
         return cmdCombo(args);
       case 'append':
         return cmdAppend(args);
+      case 'health':
+        return await cmdHealth(args);
       default: {
         // 未识别的命令：若恰好是源名，则当作切换
         const r = a2root(args);

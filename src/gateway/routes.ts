@@ -51,8 +51,12 @@ export interface RouteEntry {
 
 export interface RoutesFile {
   port: number;
-  /** 单后端失败时的重试次数（重试完仍失败再切下一个源）；默认 10 */
+  /** 单后端瞬时类重试次数（重试完仍失败再切下一个源）；默认 10，v2 调度默认 3 */
   retry?: number;
+  /** v2 调度模式：priority（默认，健康优先按序）/ round-robin（轮转分摊） */
+  scheduling?: 'priority' | 'round-robin';
+  /** v2 全链时间预算（ms）；缺省 60000 */
+  budgetMs?: number;
   routes: RouteEntry[];
 }
 
@@ -73,6 +77,10 @@ export function readRoutes(root: string): RoutesFile {
     typeof raw.retry === 'number' && raw.retry >= 0 && raw.retry <= 100
       ? Math.floor(raw.retry)
       : DEFAULT_RETRY;
+  // v2 调度配置（透传给网关运行时；缺省由网关侧兜底）
+  const scheduling = raw.scheduling === 'round-robin' ? 'round-robin' : 'priority';
+  const budgetMs =
+    typeof raw.budgetMs === 'number' && raw.budgetMs > 1000 ? Math.floor(raw.budgetMs) : undefined;
   const routes = Array.isArray(raw.routes) ? raw.routes.filter(r => r && typeof r === 'object') : [];
   const seen = new Set<string>();
   const entries: RouteEntry[] = [];
@@ -84,7 +92,7 @@ export function readRoutes(root: string): RoutesFile {
     entries.push({ alias, backends: backends.filter(b => b && typeof b === 'object') as RouteBackend[] });
     seen.add(alias);
   }
-  return { port, retry, routes: entries };
+  return { port, retry, scheduling, budgetMs, routes: entries };
 }
 
 /** 校验 alias 合法性 */

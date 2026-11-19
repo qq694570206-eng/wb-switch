@@ -123,12 +123,12 @@ async function main() {
   // ── 2. add（非交互）与重复名保护 ────────────────────────────
   console.log('\n[2] add 与重名保护');
   r = await run(
-    ['add', 'backup', '--url', 'https://api.moyu.info/v1/chat/completions', '--key', 'sk-cccccccccccccccccccc', '--model', 'gpt-4o', '--vendor', 'OpenAI'],
+    ['add', 'backup', '--url', 'https://api.moyu.info/v1/chat/completions', '--key', 'sk-cccccccccccccccccccc', '--model', 'gpt-4o', '--vendor', 'OpenAI', '--no-test'],
     { env: envA },
   );
   assert(r.code === 0, 'add 成功', r.stderr);
   r = await run(
-    ['add', 'backup', '--url', 'https://api.moyu.info/v1/chat/completions', '--key', 'x'],
+    ['add', 'backup', '--url', 'https://api.moyu.info/v1/chat/completions', '--key', 'x', '--no-test'],
     { env: envA },
   );
   assert(r.code === 4, '重名返回退出码 4', `code=${r.code}`);

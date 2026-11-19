@@ -27,6 +27,8 @@ import {
 import { listProfileNames, deleteProfile, profileExists } from './profiles.js';
 import { mergeComboIntoRoutes, removeAliasesFromRoutes } from './gateway/routes.js';
 import { appendProfile, useCombo, type ConflictPolicy } from './appender.js';
+import { probeModel, updateHealth } from './gateway/probe.js';
+import { loadProfile } from './profiles.js';
 import type { Args } from './gateway/cli-bridge.js';
 import { resolveConfigRoot } from './paths.js';
 
@@ -63,7 +65,7 @@ export function parseMembersFromArgs(args: Args): ComboMember[] {
   return [{ alias: alias ?? sources[0]!.model, sources }];
 }
 
-export function cmdCombo(args: Args): number {
+export function cmdCombo(args: Args): number | Promise<number> {
   const sub = args.positional[1];
   const root = args.configDir ? path.resolve(args.configDir) : resolveConfigRoot();
 
@@ -72,8 +74,7 @@ export function cmdCombo(args: Args): number {
       return cmdCreate(args, root);
     case 'add':
     case 'add-member':
-      return cmdAddMember(args, root);
-    case 'rm-member':
+      return cmdAddMember(args, root);    case 'rm-member':
     case 'remove-member':
       return cmdRmMember(args, root);
     case 'list':
@@ -93,18 +94,18 @@ export function cmdCombo(args: Args): number {
   }
 }
 
-function cmdCreate(args: Args, root: string): number {
+function cmdCreate(args: Args, root: string): Promise<number> {
   const name = args.positional[2];
   if (!name) {
     fail('用法：wb-switch combo create <组合名> --profile <源> --model <模型ID> [--profile2 <源> --model2 <模型ID>] [--alias <别名>]');
-    return 2;
+    return Promise.resolve(2);
   }
 
   let members: ComboMember[];
   try {
     members = parseMembersFromArgs(args);
   } catch {
-    return 2;
+    return Promise.resolve(2);
   }
 
   // 引用有效性预检
@@ -112,13 +113,26 @@ function cmdCreate(args: Args, root: string): number {
     assertMembersResolvable(root, members);
   } catch (err) {
     fail((err as Error).message);
-    return 1;
+    return Promise.resolve(1);
+  }
+
+  return cmdCreateWithProbe(args, root, name, members);
+}
+
+async function cmdCreateWithProbe(args: Args, root: string, name: string, members: ComboMember[]): Promise<number> {
+  const noTest = has(args, 'no-test');
+  const force = has(args, 'force');
+
+  if (!noTest) {
+    const allPass = await probeMembers(root, members, force);
+    if (!allPass && !force) {
+      return 1; // probeMembers 已输出失败详情
+    }
   }
 
   try {
     const combo = createCombo(root, name, members, str(args, 'description') ?? str(args, 'desc'));
     const comboMembers = combo.combo ?? [];
-    // 组合成员同步进网关路由表（fallback 链）
     mergeComboIntoRoutes(root, combo);
     if (has(args, 'json')) {
       jsonOut({ created: combo.name, members: comboMembers });
@@ -132,22 +146,61 @@ function cmdCreate(args: Args, root: string): number {
     return 0;
   } catch (err) {
     fail((err as Error).message);
-    return err && typeof (err as { code?: number }).code === 'number' ? (err as { code: number }).code : 1;
+    return 1;
   }
 }
 
-function cmdAddMember(args: Args, root: string): number {
+/** 对成员的所有后端跑 L3 探测；force=false 时失败即返回 false */
+async function probeMembers(root: string, members: ComboMember[], _force: boolean): Promise<boolean> {
+  let allPass = true;
+  for (const m of members) {
+    for (const s of m.sources) {
+      try {
+        const profile = loadProfile(root, s.profile);
+        const entry = profile.models.find(x => x.id === s.model);
+        if (!entry?.url) continue; // 无 url 无法测（lint 会报）
+        process.stdout.write(`  ${c.gray('测试')} ${s.profile}/${s.model} …\n`);
+        const r = await probeModel(entry.url, String(entry.apiKey ?? ''), s.model);
+        updateHealth(root, `${s.profile}/${s.model}`, r);
+        if (r.status === 'pass') {
+          process.stdout.write(`    ${c.green('✓')} 通过\n`);
+        } else if (r.status === 'degraded') {
+          process.stdout.write(`    ${c.yellow('△')} ${r.reason}\n`);
+        } else {
+          process.stdout.write(`    ${c.red('✗')} ${r.reason}\n`);
+          allPass = false;
+        }
+      } catch (err) {
+        process.stdout.write(`    ${c.red('✗')} 探测异常：${(err as Error).message}\n`);
+        allPass = false;
+      }
+    }
+  }
+  if (!allPass) {
+    fail('存在测试未通过的模型；只有测试通过（或 429 限流降级通过）的模型才允许入组。');
+    process.stderr.write(`  ${c.gray('处理')} 修正后重试；确认可用加 --force 强制（标记未验证）；跳过测试用 --no-test\n`);
+  }
+  return allPass;
+}
+
+async function cmdAddMember(args: Args, root: string): Promise<number> {
   const comboName = args.positional[2];
   if (!comboName) {
     fail('用法：wb-switch combo add <组合名> --profile <源> --model <模型ID> [--alias <别名>] [--after <成员别名>]');
-    return 2;
+    return Promise.resolve(2);
   }
   let members: ComboMember[];
   try {
     members = parseMembersFromArgs(args);
   } catch {
-    return 2;
+    return Promise.resolve(2);
   }
+
+  // L3 连通性测试（默认开启）
+  if (!has(args, 'no-test')) {
+    const pass = await probeMembers(root, members, has(args, 'force'));
+    if (!pass && !has(args, 'force')) return 1;  }
+
   try {
     const combo = addComboMember(root, comboName, members[0]!, str(args, 'after'));
     const comboMembers = combo.combo ?? [];

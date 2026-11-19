@@ -96,13 +96,13 @@ run(['add', 'srcDead', '--from', path.join(ROOT, 'models-d.json')]);
 // ── 1. 创建组合：非同名模型自由组合 + fallback 链 ──
 {
   const out = run([
-    'combo', 'create', 'mycombo',
+    'combo', 'create', 'mycombo', '--no-test',
     '--profile', 'srcA', '--model', 'glm-5.3', '--alias', 'glm-any',
     '--profile2', 'srcB', '--model2', 'glm-5.3',
     '--profile3', 'srcDead', '--model3', 'glm-5.3',
   ]);
   check('创建组合（glm-any：srcA→srcB→srcDead fallback 链）', out.includes('已创建组合'));
-  run(['combo', 'add', 'mycombo', '--profile', 'srcB', '--model', 'beta', '--alias', 'beta-x']);
+  run(['combo', 'add', 'mycombo', '--no-test', '--profile', 'srcB', '--model', 'beta', '--alias', 'beta-x']);
   const comboFile = JSON.parse(fs.readFileSync(path.join(ROOT, 'wb-switch', 'profiles', 'mycombo.json'), 'utf8'));
   check('组合 type=combo', comboFile.type === 'combo');
   check('组合 2 成员', comboFile.combo.length === 2);
@@ -116,11 +116,11 @@ run(['add', 'srcDead', '--from', path.join(ROOT, 'models-d.json')]);
 
 // ── 2. 重名校验 ──
 {
-  const out = run(['combo', 'create', 'srcA', '--profile', 'srcB', '--model', 'beta'], true);
+  const out = run(['combo', 'create', 'srcA', '--no-test', '--profile', 'srcB', '--model', 'beta'], true);
   check('组合名与已有源重名 → 报错', out.includes('已被占用'));
-  const out2 = run(['combo', 'create', 'mycombo', '--profile', 'srcB', '--model', 'beta'], true);
+  const out2 = run(['combo', 'create', 'mycombo', '--no-test', '--profile', 'srcB', '--model', 'beta'], true);
   check('组合名与已有组合重名 → 报错', out2.includes('已被占用'));
-  const out3 = run(['combo', 'add', 'mycombo', '--profile', 'srcB', '--model', 'beta', '--alias', 'beta-x'], true);
+  const out3 = run(['combo', 'add', 'mycombo', '--no-test', '--profile', 'srcB', '--model', 'beta', '--alias', 'beta-x'], true);
   check('组合内别名重复 → 报错', out3.includes('已存在别名') || out3.includes('别名重复'));
 }
 

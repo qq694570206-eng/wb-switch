@@ -45,6 +45,7 @@ import { startGatewayServer, gatewayLogDir } from './server.js';
 import { saveProfile, profileExists } from '../profiles.js';
 import { setActive, readState } from '../state.js';
 import { switchTo } from '../switcher.js';
+import { probeModel, updateHealth } from './probe.js';
 import type { Args } from './cli-bridge.js';
 import { resolveConfigRoot } from '../paths.js';
 
@@ -101,14 +102,41 @@ async function cmdStatus(args: Args, root: string): Promise<number> {
   const routes = readRoutes(root);
   let alive = false;
   if (status.port) alive = await pingGateway(status.port);
+
+  // 运行时健康面板（网关在跑才有）
+  interface StatsView { scheduling?: string; budgetMs?: number; backends?: unknown[] }
+  let stats: StatsView | null = null;
+  if (alive && status.port) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${status.port}/wb-gateway/stats`, { signal: AbortSignal.timeout(2000) });
+      stats = (await res.json()) as StatsView;
+    } catch { /* ignore */ }
+  }
+
   if (has(args, 'json')) {
-    jsonOut({ ...status, port: status.port, responding: alive, routes: routes.routes.length });
+    jsonOut({ ...status, port: status.port, responding: alive, routes: routes.routes.length, stats });
     return 0;
   }
   heading('网关状态');
   process.stdout.write(`  进程     ${status.running ? c.green(`运行中 (pid ${status.pid})`) : c.gray('未运行')}\n`);
   process.stdout.write(`  端口     ${status.port ?? '-'} ${alive ? c.green('· 探活成功') : status.running ? c.yellow('· 探活失败') : ''}\n`);
   process.stdout.write(`  路由数   ${routes.routes.length}\n`);
+  if (stats) {
+    process.stdout.write(`  调度     ${stats.scheduling ?? '-'} · 预算 ${stats.budgetMs ?? '-'}ms\n`);
+    const backends = stats.backends as Array<{ key: string; circuit: string; available: boolean; cooldownRemainMs: number; ok: number; fail: number; inflight: number; p95: number | null; successRate: number | null; lastError?: string }>;
+    if (Array.isArray(backends) && backends.length > 0) {
+      process.stdout.write(`  后端健康\n`);
+      for (const b of backends) {
+        const state = b.circuit === 'closed' ? c.green('正常') :
+          b.circuit === 'cooldown' ? c.yellow(`冷却 ${Math.ceil(b.cooldownRemainMs / 1000)}s`) :
+          b.circuit === 'open' ? c.red('熔断') : c.yellow('探测中');
+        const rate = b.successRate !== null ? `${Math.round(b.successRate * 100)}%` : '-';
+        const p95 = b.p95 !== null ? `${b.p95}ms` : '-';
+        process.stdout.write(`    ${b.available ? c.green('✓') : c.red('✗')} ${b.key} — ${state} · ok=${b.ok} fail=${b.fail} inflight=${b.inflight} 成功率=${rate} p95=${p95}\n`);
+        if (b.lastError && b.fail > 0) process.stdout.write(`        ${c.gray(`最近错误: ${b.lastError}`)}\n`);
+      }
+    }
+  }
   process.stdout.write(`  路由表   ${routesFile(root)}\n`);
   process.stdout.write(`  日志     ${path.join(gatewayLogDir(root), 'gateway.log')}\n`);
   process.stdout.write(`  launchd  ${status.launchd ? c.green(`已安装 (${status.plistPath})`) : c.gray('未安装（可选开机自启：gateway install）')}\n`);
@@ -176,7 +204,7 @@ async function cmdRun(args: Args, root: string): Promise<number> {
 
 // ─────────────────────────── routes ───────────────────────────
 
-function cmdRoutes(args: Args, root: string): number {
+function cmdRoutes(args: Args, root: string): number | Promise<number> {
   // route add / route remove 走这里
   const action = args.positional[2];
   if (action === 'add') return cmdRouteAdd(args, root);
@@ -204,7 +232,7 @@ function cmdRoutes(args: Args, root: string): number {
   return 0;
 }
 
-function cmdRouteAdd(args: Args, root: string): number {
+async function cmdRouteAdd(args: Args, root: string): Promise<number> {
   const alias = args.positional[3];
   if (!alias) {
     fail('用法：wb-switch gateway route add <别名> --profile <源> --model <模型ID> [--profile2 <源> --model2 <模型ID>]');
@@ -237,6 +265,33 @@ function cmdRouteAdd(args: Args, root: string): number {
     fail('后端引用无效：');
     for (const b of bad) process.stderr.write(`  ${c.gray('!')} ${b.profile}/${b.model}：${b.error}\n`);
     return 1;
+  }
+
+  // L3 连通性测试（默认开启）：只有测试通过（或 429 降级通过）的模型才允许入路由
+  if (!has(args, 'no-test')) {
+    let allPass = true;
+    for (const b of resolved) {
+      if (!b.url) continue;
+      process.stdout.write(`  ${c.gray('测试')} ${b.profile}/${b.model} …\n`);
+      try {
+        const r = await probeModel(b.url, b.apiKey, b.model);
+        updateHealth(root, `${b.profile}/${b.model}`, r);
+        if (r.status === 'pass') process.stdout.write(`    ${c.green('✓')} 通过\n`);
+        else if (r.status === 'degraded') process.stdout.write(`    ${c.yellow('△')} ${r.reason}\n`);
+        else {
+          process.stdout.write(`    ${c.red('✗')} ${r.reason}\n`);
+          allPass = false;
+        }
+      } catch (err) {
+        process.stdout.write(`    ${c.red('✗')} ${(err as Error).message}\n`);
+        allPass = false;
+      }
+    }
+    if (!allPass && !has(args, 'force')) {
+      fail('存在测试未通过的后端；只有测试通过（或限流降级通过）的模型才允许加入路由。');
+      process.stderr.write(`  ${c.gray('处理')} 修正后重试；确认可用加 --force 强制；跳过测试用 --no-test\n`);
+      return 1;
+    }
   }
 
   try {

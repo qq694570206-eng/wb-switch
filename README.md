@@ -242,9 +242,47 @@ wb-switch gateway lint            # 校验路由引用是否有效
 wb-switch gateway install         # macOS 开机自启（launchd + KeepAlive）
 ```
 
-路由表存在 `~/.workbuddy/wb-switch/routes.json`；换后端 = 改路由表 + `gateway restart`，`models.json` 从此不动。
+路由表存在 `~/.workbuddy/wb-switch/routes.json`；换后端 = 改路由表（热加载即时生效），`models.json` 从此不动。
 
-## 组合（v1.9 新增）：多源模型聚合 + 追加模式
+### v2.0 调度核心（失败分类 + 熔断 + 连通性测试）
+
+网关不再是简单顺序转发，而是带运行时自愈的调度器（全部行为可通过 `routes.json` 配置）：
+
+**失败分类处理**：
+
+| 失败类型 | 判定 | 处理 |
+|---|---|---|
+| 瞬时（网络/超时/5xx/408） | 重试 3 次（指数退避 500ms 起、jitter ±30%），仍失败切下一个源 |
+| 速率 429 | 带 `Retry-After` ≤60s → 不重试，冷却该后端至到期，立即切下一个 |
+| 配额 429 | body 含 quota/balance/余额 等，或 Retry-After >60s → 冷却 30min，立即切下一个 |
+| 鉴权 401/403 | 不重试，冷却 60min，立即切下一个 |
+| 客户端 4xx（400/404…） | 不重试，切下一个源（不同源模型名不同，可能就对了） |
+| 全链耗尽 | 502 + `x-wb-gateway` 诊断头（request_id + 每后端尝试摘要） |
+
+**并发治理**：熔断器（连续 5 次瞬时失败 → open 冷却 30s → half-open 探测 → 恢复；探测失败冷却翻倍封顶 5min）；per-backend inflight 上限 6（超限排队 30s）；全链 60s 预算（`budgetMs` 可调，耗尽立即终态）；客户端取消传播（断开即中止重试与上游请求）；背压透传。
+
+**连通性测试（只有测试通过的模型才能入组）**：
+
+```bash
+wb-switch add <名> --url <地址> --key <密钥>   # 默认 L2 测试：GET /v1/models（--no-test 跳过）
+wb-switch combo add / gateway route add        # 默认 L3 测试：对目标模型发 max_tokens=1 真实请求
+#   200 → pass；429 速率 → pass（degraded，限流中但鉴权/模型均通）
+#   401/403/404/超时/配额 → fail，阻止加入（--force 强加标未验证）
+wb-switch health check [源名|组合名]            # 手动复测并刷新 health.json（缓存 1h）
+```
+
+**可观测性**：`wb-switch gateway status` 展示每后端健康面板（熔断态/冷却剩余/成功率/p95/inflight/最近错误）；`GET /wb-gateway/stats` 返回 JSON 指标；每请求 `request_id` 贯穿日志。
+
+```json
+// routes.json 可选配置（全部有默认值，旧 retry=N 仍兼容）
+{
+  "retry": 3,                      // 每后端瞬时类重试次数
+  "scheduling": "priority",        // priority（健康优先按序）| round-robin（轮转分摊）
+  "budgetMs": 60000                // 全链时间预算
+}
+```
+
+## 组合（v1.9）：多源模型聚合 + 追加模式
 
 网关解决「同名模型」的路由；**组合**解决「把多个源的模型凑成一份配置」：
 
@@ -284,7 +322,7 @@ npm run gui            # 开发模式直接开窗口
 npm run build:app      # 只构建 app 目录（build/app）
 npm run build:win       # 打包安装版 + 免安装版 → dist-app/
 npm run build:exe      # 打包命令行单文件 exe → dist-exe/（按需）
-npm test               # 51 项命令行断言 + 27 项模型获取断言 + 15 项网关断言 + 30 项组合断言
+npm test               # 51 命令行 + 27 模型获取 + 6 协议 + 15 网关 + 33 网关调度 + 30 组合断言
 npm run clean          # 清掉全部构建产物，只留 exe 与源码
 ```
 
