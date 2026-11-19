@@ -22,7 +22,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getDaemonStatus, startDaemon, pingGateway } from './gateway/daemon.js';
 import { readRoutes } from './gateway/routes.js';
-import { resolveConfigRoot } from './paths.js';
+import { dataDir, resolveConfigRoot } from './paths.js';
 import { VERSION } from './version.js';
 
 interface JsonRpcRequest {
@@ -146,7 +146,9 @@ const TOOL_DEF_LIST = {
 };
 
 function defaultSaveDir(root: string): string {
-  return path.join(root, 'wb-switch', 'images');
+  // 图片落盘位置跟着最新目录约定走（~/.wb-switch/...），
+  // 不要再往被管理的工具目录（<WorkBuddy根>/wb-switch）里写东西。
+  return path.join(dataDir(root), 'images');
 }
 
 function resolveImageInput(input: string): string {
