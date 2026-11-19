@@ -27,7 +27,7 @@
         </div>
 
         <div class="current-card" id="currentCard">
-          <div class="current-label">当前源</div>
+          <div class="current-label">当前生效</div>
           <div class="current-name" id="currentName">—</div>
           <div class="current-meta" id="currentMeta">正在读取…</div>
         </div>
@@ -66,8 +66,12 @@
         </div>
 
         <div class="profile-list" id="profileList"></div>
+      </aside>
 
-        <div class="side-footer">
+      <!-- ───────────── 主区域 ───────────── -->
+      <main class="main">
+        <!-- 顶部页签：六个功能页的入口（原在侧栏底部，移到内容区顶部更符合操作习惯） -->
+        <nav class="top-nav" id="topNav" aria-label="页面切换">
           <button class="tab-btn is-active" data-view="sources">源</button>
           <button class="tab-btn" data-view="backups">
             备份<span class="pill" id="backupBadge">0</span>
@@ -76,11 +80,8 @@
           <button class="tab-btn" data-view="image">图片</button>
           <button class="tab-btn" data-view="doctor">自检</button>
           <button class="tab-btn" data-view="import">导入</button>
-        </div>
-      </aside>
+        </nav>
 
-      <!-- ───────────── 主区域 ───────────── -->
-      <main class="main">
         <section class="view" id="view-sources">
           <div class="banner" id="errBanner" hidden></div>
 

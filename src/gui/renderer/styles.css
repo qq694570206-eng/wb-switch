@@ -168,7 +168,7 @@ button {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 26px 30px 18px;
+  padding: 16px 30px 18px;
 }
 
 /* ───────────────── 侧栏 ───────────────── */
@@ -209,8 +209,17 @@ button {
   margin: 0 14px 12px;
   padding: 12px 14px;
   border: 1px solid var(--line);
+  border-left: 3px solid var(--ok);
   border-radius: var(--radius);
   background: var(--panel-soft);
+  transition: border-color 0.15s ease;
+}
+/* 磁盘配置与源库不一致 / 还没有任何源时，当前生效卡转警示色 */
+.current-card.is-drift {
+  border-left-color: var(--warn);
+}
+.current-card.is-empty {
+  border-left-color: var(--ink-3);
 }
 .current-label {
   font-size: 11px;
@@ -339,22 +348,27 @@ button {
   flex: 0 0 auto;
 }
 
-.side-footer {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
+/* 顶部页签：六个功能页横排（原侧栏底部 grid 改版） */
+.top-nav {
+  display: flex;
+  align-items: flex-end;
   gap: 2px;
-  padding: 8px 10px 10px;
-  border-top: 1px solid var(--line);
+  padding: 10px 22px 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  flex: 0 0 auto;
 }
 .tab-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 5px;
-  height: 32px;
-  border-radius: var(--radius-xs);
+  height: 36px;
+  padding: 0 14px;
+  border-radius: var(--radius-xs) var(--radius-xs) 0 0;
   font-size: 12.5px;
   color: var(--ink-2);
+  position: relative;
 }
 .tab-btn:hover {
   background: var(--panel-soft);
@@ -364,6 +378,15 @@ button {
   background: var(--accent-soft);
   color: var(--accent);
   font-weight: 600;
+}
+.tab-btn.is-active::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  background: var(--accent);
 }
 .pill {
   min-width: 17px;

@@ -21,6 +21,7 @@
     sidebarKeyword: '', // 侧栏源搜索关键词
     switching: null, // 正在切换的目标源名（驱动加载态）
     switchError: null, // 最近一次切换失败 { name, message }（驱动详情页内联错误条）
+    lastActiveSeen: null, // 上次渲染时的生效源名（变了就滚动到可见）
   };
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -222,6 +223,10 @@
     const activeProfile = o.profiles.find((p) => p.active);
 
     $('#currentName').textContent = o.state.active || '未设置';
+    // 卡片左缘颜色随生效状态变化：一致=绿、改动/未匹配=黄、无源=灰
+    const card = $('#currentCard');
+    card.classList.toggle('is-drift', Boolean(activeProfile && !activeProfile.inSync));
+    card.classList.toggle('is-empty', o.profiles.length === 0);
     if (!o.profiles.length) {
       $('#currentMeta').textContent = '还没有源';
     } else if (activeProfile) {
@@ -263,6 +268,7 @@
       const multi = state.selected.has(p.name);
       const isSwitching = state.switching === p.name;
       btn.className = `profile-item${state.detail?.name === p.name ? ' is-selected' : ''}${multi ? ' is-multi' : ''}${isSwitching ? ' is-switching' : ''}`;
+      btn.dataset.name = p.name;
       btn.innerHTML =
         `<div class="pi-top">
            ${multi ? '<span class="multi-check">✓</span>' : ''}
@@ -296,6 +302,14 @@
         });
       };
       list.appendChild(btn);
+    }
+
+    // 生效源变化时（本页切换 / CLI、托盘外部切换后轮询发现），把对应列表项滚进可视区
+    const activeNow = o.profiles.find((p) => p.active)?.name || null;
+    if (activeNow && activeNow !== state.lastActiveSeen) {
+      state.lastActiveSeen = activeNow;
+      const item = list.querySelector(`[data-name="${CSS.escape(activeNow)}"]`);
+      item?.scrollIntoView({ block: 'nearest' });
     }
 
     renderBatchBar();
@@ -3069,6 +3083,21 @@
 
   // ───────────────────────── 启动 ─────────────────────────
 
+  /** 轻量检查外部变化（CLI / 托盘切换源），有变化才整页 reload，避免无谓渲染 */
+  async function pollExternalChange() {
+    if (state.busy || !$('#overlay').hidden || document.hidden) return;
+    try {
+      const ov = await call(api.overview());
+      const prev = state.overview;
+      if (!prev) return;
+      const sig = (o) =>
+        JSON.stringify([o.profiles, o.state, o.currentModels?.length, o.currentError, o.backupCount]);
+      if (sig(ov) !== sig(prev)) await reload(state.detail?.name);
+    } catch {
+      /* IPC 抖动不打扰用户 */
+    }
+  }
+
   async function boot() {
     bind();
     updateProxyLabel();
@@ -3084,6 +3113,9 @@
     } catch (err) {
       reportError(err);
     }
+    // 外部切换同步：定时轮询 + 窗口获得焦点时立即检查
+    setInterval(() => void pollExternalChange(), 5000);
+    window.addEventListener('focus', () => void pollExternalChange());
   }
 
   void boot();
