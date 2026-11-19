@@ -67,6 +67,19 @@ await esbuild.build({
   logLevel: 'warning',
 });
 
+console.log('· 打包自包含 CLI（供安装后自动装进 PATH，MCP 免绝对路径）');
+// esbuild 会保留 src/cli.ts 首行 shebang 并置于产物顶部，产物可直接 chmod +x 执行
+await esbuild.build({
+  entryPoints: [path.join(ROOT, 'src', 'cli.ts')],
+  outfile: path.join(APP, 'cli', 'wb-switch'),
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  target: 'node20',
+  sourcemap: false,
+  logLevel: 'warning',
+});
+
 console.log('· 拷贝界面资源');
 copyDir(path.join(ROOT, 'src/gui/renderer'), path.join(APP, 'renderer'));
 

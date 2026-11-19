@@ -25,6 +25,7 @@
     "icon": "node scripts/make-icon.mjs",
     "clean": "node scripts/clean.mjs",
     "link": "npm link",
+    "install:cli": "node scripts/install-cli.mjs",
     "gui": "node scripts/build-gui.mjs && electron build/app",
     "build:app": "node scripts/build-gui.mjs",
     "build:portable": "node scripts/build-portable.mjs --portable-only",
