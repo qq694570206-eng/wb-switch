@@ -13,7 +13,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { exists, removeQuietly, writeFileAtomic, ensureDir } from '../fsutil.js';
-import { dataDir } from '../paths.js';
+import { dataDir, gatewayDataDir } from '../paths.js';
 import { readRoutes } from './routes.js';
 
 export interface DaemonStatus {
@@ -26,7 +26,7 @@ export interface DaemonStatus {
 }
 
 export function pidFile(root: string): string {
-  return path.join(dataDir(root), 'gateway.pid');
+  return path.join(gatewayDataDir(), 'gateway.pid');
 }
 
 export function readPid(root: string): number | null {
@@ -147,9 +147,9 @@ export function startDaemon(root: string, options: { port?: number } = {}): { pi
     ? [entry, 'gateway', 'run']
     : [path.join(path.dirname(entry), 'cli.js'), 'gateway', 'run'];
 
-  const out = fs.openSync(path.join(dataDir(root), 'gateway.out.log'), 'a');
-  const err = fs.openSync(path.join(dataDir(root), 'gateway.err.log'), 'a');
-  ensureDir(dataDir(root));
+  const out = fs.openSync(path.join(gatewayDataDir(), 'gateway.out.log'), 'a');
+  const err = fs.openSync(path.join(gatewayDataDir(), 'gateway.err.log'), 'a');
+  ensureDir(gatewayDataDir());
 
   const child: ChildProcess = spawn(process.execPath, args, {
     detached: true,
@@ -207,7 +207,7 @@ export function writeLaunchdPlist(root: string, port: number): string {
   const entry = process.argv[1] ?? '';
   const cliJs = entry.endsWith('cli.js') ? entry : path.join(path.dirname(entry), 'cli.js');
   const nodeBin = process.execPath;
-  const logDir = path.join(dataDir(root), 'logs');
+  const logDir = path.join(gatewayDataDir(), 'logs');
   ensureDir(logDir);
 
   const plist = `<?xml version="1.0" encoding="UTF-8"?>
@@ -235,9 +235,9 @@ export function writeLaunchdPlist(root: string, port: number): string {
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>${escapeXml(path.join(dataDir(root), 'gateway.out.log'))}</string>
+  <string>${escapeXml(path.join(gatewayDataDir(), 'gateway.out.log'))}</string>
   <key>StandardErrorPath</key>
-  <string>${escapeXml(path.join(dataDir(root), 'gateway.err.log'))}</string>
+  <string>${escapeXml(path.join(gatewayDataDir(), 'gateway.err.log'))}</string>
 </dict>
 </plist>
 `;

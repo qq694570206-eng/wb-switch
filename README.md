@@ -209,23 +209,31 @@ wb-switch 的网关做了**双向协议翻译**，所以任意 chat 上游都能
 
 ## 它改了哪些文件
 
-只改写目标工具的模型配置，其它配置一概不碰。本工具自己的数据在 `~/.wb-switch/`：
+只改写目标工具的模型配置，其它配置一概不碰。**本工具的所有数据都在自己的目录 `~/.wb-switch/` 下**，
+不会往 WorkBuddy / Codex 的配置目录里塞任何自己的文件：
 
 ```
-~/.wb-switch/
-├── current-target.json          # 当前目标工具
-├── settings.json                # 全局设置
+~/.wb-switch/                        ← 工具的家（WB_SWITCH_HOME 可覆盖）
+├── current-target.json              # 当前目标工具
+├── settings.json                    # 全局设置
 ├── targets/
 │   ├── workbuddy/
-│   │   ├── profiles/<源名>.json # 每个源一份快照
-│   │   ├── backups/             # 切换前 / 还原前 / 已删除的源
-│   │   └── state.json           # 当前源指针
-│   └── codex/                   # 同上，独立一套
-└── gateway/
-    └── routes.json              # 网关路由（跨目标共享）
+│   │   ├── profiles/<源名>.json     # 每个源一份快照
+│   │   ├── backups/                 # 切换前 / 还原前 / 已删除的源
+│   │   ├── images/                  # MCP 生成的图片（默认保存位置）
+│   │   └── state.json               # 当前源指针
+│   └── codex/                       # 同上，独立一套
+└── gateway/                         # 网关（跨目标共享）
+    ├── routes.json                  # 路由表
+    ├── health.json                  # 后端健康度
+    ├── gateway.pid                  # 进程号
+    └── logs/gateway.log             # 请求日志
 ```
 
-从旧版（`<WorkBuddy根>/wb-switch/`）升级时**首次运行自动迁移**：只补缺失文件、绝不覆盖你已改的内容，旧目录保留可回滚。
+**从旧版升级自动迁移**：首次运行会把 `<WorkBuddy根>/wb-switch/` 里的源、备份、设置、
+网关路由全部搬到上面这套结构里。规则是**只补缺失、绝不覆盖**，重复运行也不会重复追加日志。
+
+搬完之后旧目录就没用了，工具不会再往那里写任何东西，可以放心删掉。
 
 文件夹本身就是纯文本 JSON/TOML，可以手工备份、迁移、进 git。
 

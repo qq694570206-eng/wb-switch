@@ -19,7 +19,7 @@
     "build:exe": "node scripts/build-exe.mjs",
     "dev": "tsc --watch",
     "start": "node dist/cli.js",
-    "test": "npm run build && node tests/smoke.mjs && node tests/modelfetch.mjs && node tests/proxy.mjs && node tests/gateway.mjs && node tests/gateway2.mjs && node tests/combo.mjs && node tests/abilities.mjs && node tests/responses.mjs && node tests/targets.mjs && node tests/gui-targets.mjs && node tests/image.mjs",
+    "test": "npm run build && node tests/smoke.mjs && node tests/modelfetch.mjs && node tests/proxy.mjs && node tests/gateway.mjs && node tests/gateway2.mjs && node tests/combo.mjs && node tests/abilities.mjs && node tests/responses.mjs && node tests/targets.mjs && node tests/gui-targets.mjs && node tests/migration.mjs && node tests/image.mjs",
     "test:exe": "node tests/smoke.mjs dist-exe/wb-switch.exe",
     "typecheck": "tsc --noEmit",
     "icon": "node scripts/make-icon.mjs",
