@@ -19,6 +19,8 @@
     proxy: '',
     selected: new Set(), // 多选的源名
     sidebarKeyword: '', // 侧栏源搜索关键词
+    switching: null, // 正在切换的目标源名（驱动加载态）
+    switchError: null, // 最近一次切换失败 { name, message }（驱动详情页内联错误条）
   };
 
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -224,7 +226,8 @@
       $('#currentMeta').textContent = '还没有源';
     } else if (activeProfile) {
       const host = activeProfile.hosts[0] || '无地址';
-      $('#currentMeta').textContent = `${activeProfile.modelCount} 个模型 · ${host}`;
+      const sync = activeProfile.inSync ? '与源一致' : '磁盘已改动';
+      $('#currentMeta').textContent = `${activeProfile.modelCount} 个模型 · ${host} · ${sync}`;
     } else {
       $('#currentMeta').textContent = '磁盘配置未匹配任何源';
     }
@@ -258,12 +261,18 @@
     for (const p of shown) {
       const btn = document.createElement('button');
       const multi = state.selected.has(p.name);
-      btn.className = `profile-item${state.detail?.name === p.name ? ' is-selected' : ''}${multi ? ' is-multi' : ''}`;
+      const isSwitching = state.switching === p.name;
+      btn.className = `profile-item${state.detail?.name === p.name ? ' is-selected' : ''}${multi ? ' is-multi' : ''}${isSwitching ? ' is-switching' : ''}`;
       btn.innerHTML =
         `<div class="pi-top">
            ${multi ? '<span class="multi-check">✓</span>' : ''}
-           <span class="dot${p.active ? ' active' : ''}"></span>
+           ${
+             isSwitching
+               ? '<span class="pi-spin" aria-hidden="true"></span>'
+               : `<span class="dot${p.active ? ' active' : ''}"></span>`
+           }
            <span class="pi-name">${esc(p.name)}</span>
+           ${p.active ? '<span class="tag-live">生效中</span>' : ''}
            ${p.inSync ? '<span class="tag-sync">同步</span>' : ''}
          </div>
          <div class="pi-meta">${p.modelCount} 个模型 · ${esc(p.hosts.join(' / ') || '无地址')}</div>`;
@@ -313,12 +322,27 @@
     $('#detail').hidden = empty || !d;
     if (empty || !d) return;
 
+    // 切换失败的内联提示：只在失败目标 == 当前查看的源时显示，点「重试」直接重切
+    const errBox = $('#switchErr');
+    const se = state.switchError;
+    if (se && se.name === d.name) {
+      errBox.hidden = false;
+      errBox.innerHTML =
+        `<span class="se-icon">!</span><div class="se-body"><b>切换到「${esc(d.name)}」失败</b>` +
+        `<span>${esc(se.message)}</span></div>` +
+        '<button class="btn btn-sm btn-quiet" id="seRetry">重试</button>';
+      $('#seRetry', errBox).onclick = () => void doSwitch(d.name);
+    } else {
+      errBox.hidden = true;
+      errBox.innerHTML = '';
+    }
+
     $('#dName').textContent = d.name;
     $('#dDesc').textContent = d.description || '';
     $('#dDesc').hidden = !d.description;
 
-    const badges = [];
-    if (d.active) badges.push('<span class="badge accent">当前源</span>');
+    const badges = ['<span class="badge">源库快照</span>'];
+    if (d.active) badges.push('<span class="badge accent">当前生效源</span>');
     if (d.inSync) badges.push('<span class="badge ok">与磁盘一致</span>');
     if (d.active && !d.inSync) badges.push('<span class="badge warn">磁盘内容已变</span>');
     if (!d.active) badges.push('<span class="badge">未启用</span>');
@@ -338,8 +362,15 @@
       .join('');
 
     $('#dModelCount').textContent = String(d.models.length);
-    $('#btnSwitch').disabled = Boolean(d.active && d.inSync);
-    $('#btnSwitch').textContent = d.active && d.inSync ? '已在此源' : '切换到此源';
+    const switching = state.switching === d.name;
+    $('#btnSwitch').disabled = Boolean(switching || (d.active && d.inSync));
+    $('#btnSwitch').textContent = switching
+      ? '切换中…'
+      : d.active && d.inSync
+        ? '已在此源'
+        : d.active && !d.inSync
+          ? '重新切换（覆盖磁盘改动）'
+          : '切换到此源';
 
     const flags = [
       ['supportsToolCall', '工具调用'],
@@ -348,8 +379,9 @@
       ['useCustomProtocol', '自定义协议'],
     ];
 
-    $('#dModels').innerHTML = d.models
-      .map((m, i) => {
+    $('#dModels').innerHTML = d.models.length
+      ? d.models
+          .map((m, i) => {
         const chips = flags
           .map(
             ([k, label]) =>
@@ -383,10 +415,12 @@
           <div class="chips">${chips}</div>
         </div>`;
       })
-      .join('');
+      .join('')
+      : '<div class="model-empty">这个源还没有模型。点上方「编辑」→「获取模型」从网关拉取，或手工添加后再切换。</div>';
 
     // Key 显示切换
     $('#dModels').onclick = (e) => {
+      if (d.models.length === 0) return;
       const reveal = e.target.closest('[data-reveal]');
       if (reveal) {
         const i = Number(reveal.dataset.reveal);
@@ -416,10 +450,77 @@
 
   function renderAll() {
     renderBanner();
+    renderEffective();
     renderSidebar();
     renderDetail();
     $('#statusPath').textContent = `${state.overview.configRoot}`;
     $('#statusVersion').textContent = `v${state.overview.appVersion}`;
+  }
+
+  /**
+   * 渲染「当前生效」卡片。
+   *
+   * 它展示的是磁盘上 models.json 的真实状态（真正作用于 WorkBuddy 的配置），
+   * 与下方「源详情」分开：源详情 = 源库里某份快照的内容；本卡 = 切换结果。
+   * 状态判定：
+   *   ok   → 与某个源完全一致（正常生效）
+   *   warn → 有 active 指针但内容已被手动改动 / 内容匹配了别的源
+   *   err  → models.json 缺失或解析失败
+   */
+  function renderEffective() {
+    const card = $('#effectiveCard');
+    if (!card) return;
+    const o = state.overview;
+    if (!o) return;
+    card.hidden = false;
+
+    let tone = 'ok';
+    let title = '—';
+    let desc = '';
+    const activeName = o.state?.active || null;
+    const activeProfile = o.profiles.find((p) => p.name === activeName && p.inSync);
+    const anySyncProfile = o.profiles.find((p) => p.inSync);
+
+    if (o.currentError) {
+      tone = 'err';
+      title = 'models.json 解析失败';
+      desc = `${o.currentError} · 切换任意源会覆盖这个文件（覆盖前自动备份）`;
+    } else if (!o.hasModels || o.currentModels === null) {
+      tone = 'err';
+      title = '磁盘上还没有生效的模型配置';
+      desc = 'models.json 不存在或为空，点任意源里的「切换到此源」生成它';
+    } else if (activeName && activeProfile) {
+      tone = 'ok';
+      title = `已生效：「${activeName}」`;
+      desc = `写入 ${o.currentModels.length} 个模型 · 与源库内容一致`;
+    } else if (activeName && anySyncProfile && anySyncProfile.name !== activeName) {
+      tone = 'warn';
+      title = `内容与源「${anySyncProfile.name}」一致，但指针记录的是「${activeName}」`;
+      desc = '重新切换一次即可对齐；不影响实际使用';
+    } else if (activeName) {
+      tone = 'warn';
+      title = `「${activeName}」生效后，models.json 又被改过`;
+      desc = `当前磁盘 ${o.currentModels.length} 个模型，与源库内容不一致；重新切换可恢复`;
+    } else if (anySyncProfile) {
+      tone = 'warn';
+      title = `内容与源「${anySyncProfile.name}」一致，但不是通过本工具切换的`;
+      desc = `当前磁盘 ${o.currentModels.length} 个模型 · 在源列表选中它可查看详情`;
+    } else {
+      tone = 'warn';
+      title = '未匹配任何源';
+      desc = `当前磁盘 ${o.currentModels.length} 个模型，不是源库中任何一份快照；可点「保存当前配置」把它存为源`;
+    }
+
+    const toneText = { ok: '生效中', warn: '待确认', err: '异常' };
+    const when = o.state?.updatedAt ? fmtTime(o.state.updatedAt) : null;
+    card.innerHTML =
+      `<div class="eff-head">
+         <span class="eff-label">当前生效</span>
+         <span class="eff-tone ${tone}"><span class="eff-dot"></span>${toneText[tone]}</span>
+         ${when ? `<span class="eff-time">上次切换 ${esc(when)}</span>` : ''}
+       </div>
+       <div class="eff-title">${esc(title)}</div>
+       <div class="eff-desc">${esc(desc)}</div>`;
   }
 
   /** 磁盘上的 models.json 读不出来时，在主区域顶部说明清楚 */
@@ -576,19 +677,32 @@
     }
 
     await guarded(async () => {
-      const r = await call(api.switchTo(name));
-      await reload(name);
-      if (r.identical) {
-        toast('info', `「${name}」已同步`, '内容一致，无需重启');
-      } else {
-        toast(
-          'ok',
-          `已切换到「${name}」`,
-          `写入 ${r.modelCount} 个模型${r.backup ? ` · 已备份原配置` : ''} · 需重启 WorkBuddy 或新开对话才能生效`,
-        );
+      state.switching = name;
+      state.switchError = null;
+      renderAll(); // 先进入加载态：按钮「切换中…」+ 侧栏对应源转圈
+      try {
+        const r = await call(api.switchTo(name));
+        await reload(name); // 成功后自动选中并展示切换目标
+        if (r.identical) {
+          toast('info', `「${name}」已同步`, '内容一致，无需重启');
+        } else {
+          toast(
+            'ok',
+            `已切换到「${name}」`,
+            `写入 ${r.modelCount} 个模型${r.backup ? ` · 已备份原配置` : ''} · 需重启 WorkBuddy 或新开对话才能生效`,
+          );
+        }
+        // 刷新托盘菜单（当前源变了）
+        if (api.refreshTray) api.refreshTray();
+      } catch (err) {
+        // 失败：磁盘配置不动（switcher 内部已回滚），在详情页内联展示错误 + 重试
+        state.switchError = { name, message: err?.hint ? `${err.message}（${err.hint}）` : String(err?.message || err) };
+        renderAll();
+        throw err; // 交给 guarded 统一 toast，保持错误可见
+      } finally {
+        state.switching = null;
+        renderAll(); // 成功：刷新掉加载态；失败：保留错误条 + 恢复按钮可用
       }
-      // 刷新托盘菜单（当前源变了）
-      if (api.refreshTray) api.refreshTray();
     });
   }
 

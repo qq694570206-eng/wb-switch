@@ -84,6 +84,12 @@
         <section class="view" id="view-sources">
           <div class="banner" id="errBanner" hidden></div>
 
+          <!-- 当前生效：磁盘上 models.json 的真实状态（真正作用于 WorkBuddy），与下方源详情区分 -->
+          <div class="eff-card" id="effectiveCard" hidden>
+            <div class="eff-head"><span class="eff-label">当前生效</span></div>
+            <div class="eff-title">正在读取…</div>
+          </div>
+
           <div class="empty-state" id="emptyState" hidden>
             <div class="empty-icon">⇄</div>
             <h2>还没有任何源</h2>
@@ -109,6 +115,9 @@
                 <button class="btn btn-danger-quiet" id="btnDelete">删除</button>
               </div>
             </header>
+
+            <!-- 切换失败内联提示（仅失败目标 == 当前查看的源时显示） -->
+            <div class="switch-err" id="switchErr" hidden></div>
 
             <div class="meta-row" id="dMeta"></div>
 

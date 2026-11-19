@@ -1841,3 +1841,150 @@ body.is-busy .btn:not(.icon-btn) {
 .gen-err {
   color: #b91c1c;
 }
+
+/* ───────────── 「当前生效」卡片（models.json 实况，与源详情区分） ───────────── */
+.eff-card {
+  padding: 14px 16px;
+  margin-bottom: 18px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--ok);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+}
+.eff-card:has(.eff-tone.warn) {
+  border-left-color: var(--warn);
+}
+.eff-card:has(.eff-tone.err) {
+  border-left-color: var(--danger);
+}
+.eff-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.eff-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: var(--ink-3);
+  text-transform: uppercase;
+}
+.eff-tone {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 999px;
+}
+.eff-tone.ok {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+.eff-tone.warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.eff-tone.err {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.eff-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.eff-time {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--ink-3);
+}
+.eff-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.eff-desc {
+  margin-top: 3px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+/* ───────────── 切换失败内联提示 ───────────── */
+.switch-err {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+  border-radius: var(--radius-sm);
+  background: var(--danger-soft);
+}
+.switch-err .se-icon {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--danger);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+}
+.switch-err .se-body {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+.switch-err .se-body span {
+  display: block;
+  color: var(--ink-2);
+}
+
+/* ───────────── 侧栏：生效中标签 / 切换中加载圈 ───────────── */
+.tag-live {
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  flex: 0 0 auto;
+}
+.pi-spin {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  border-top-color: var(--accent);
+  animation: pi-spin 0.7s linear infinite;
+}
+@keyframes pi-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.profile-item.is-switching .pi-name {
+  color: var(--ink-3);
+}
+
+/* ───────────── 详情：模型空态 ───────────── */
+.model-empty {
+  padding: 28px 16px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-sm);
+  text-align: center;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--ink-3);
+}
