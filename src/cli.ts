@@ -29,6 +29,7 @@ import {
   readCurrentTarget,
   writeCurrentTarget,
   TARGET_IDS,
+  type TargetAdapter,
   type TargetId,
 } from './targets/index.js';
 import {
@@ -379,7 +380,6 @@ function initTarget(a: Args): string {
     id = readCurrentTarget(wbSwitchHome());
   }
   setActiveTarget(id);
-
   // 迁移旧数据（只对 workbuddy 有意义；其它 target 无旧数据）
   if (id === 'workbuddy') {
     try {
@@ -394,6 +394,13 @@ function initTarget(a: Args): string {
     }
   }
   return id;
+}
+
+/** 取当前目标的适配器（initTarget 之后才有效） */
+function getActiveTargetAdapter(_root: string): TargetAdapter {
+  return getTarget(getActiveTargetId(), {
+    workbuddyRoot: _root,
+  });
 }
 
 /** wb-switch targets [list] | targets use <id> */
@@ -710,6 +717,36 @@ function cmdUse(a: Args, nameArg?: string): number {
   const name = nameArg ?? a.positional[1];
   if (!name) throw new UsageError('用法：wb-switch use <名称>');
   const dryRun = has(a, 'dry-run');
+
+  // ── 非 WorkBuddy 目标（如 Codex）：交给适配器按它自己的格式写入 ──
+  // switchTo 只懂 models.json；Codex 等目标必须走 TargetAdapter.writeModels，
+  // 否则会把 JSON 写进 TOML 工具的目录（models.json 凭空多出来且不生效）。
+  const target = getActiveTargetAdapter(r);
+  if (target.id !== 'workbuddy') {
+    const profile = loadProfile(r, name);
+    if (!profile.models.length) {
+      throw new ProfileError(`源「${profile.name}」是空的，切换后目标工具将没有可用模型。`);
+    }
+    if (dryRun) {
+      heading('演练结果（未写入）');
+      process.stdout.write(`  将切换至  ${c.bold(c.cyan(profile.name))}\n`);
+      process.stdout.write(`  写入文件  ${target.configPath()}\n`);
+      process.stdout.write(`  模型数    ${profile.models.length}\n`);
+      return ExitCode.OK;
+    }
+    const res = target.writeModels(profile.models);
+    setActive(r, profile.name, readState(r).lastBackup ?? null);
+    const vendor = profile.models[0]?.vendor || 'Custom';
+    process.stdout.write(`✓ 已切换到「${profile.name}」(${res.modelCount} 个模型 · ${vendor})\n`);
+    process.stdout.write(`  写入 ${target.configPath()}\n`);
+    for (const note of res.notes) process.stdout.write(`  ${c.gray(note)}\n`);
+    const activeIds = profile.models.map((m) => m.id).slice(0, 4).join(', ');
+    process.stdout.write(`  模型   ${activeIds}${profile.models.length > 4 ? ' …' : ''}\n`);
+    if (has(a, 'json')) {
+      jsonOut({ active: profile.name, profile: profile.name, target: target.configPath(), models: res.modelCount });
+    }
+    return ExitCode.OK;
+  }
 
   // 组合分流：组合的「选中」是追加模式——不覆盖当前已选源，
   // 组合条目按序追加到 models.json 尾部（普通源逻辑保持整体替换不变）

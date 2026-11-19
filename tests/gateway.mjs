@@ -170,7 +170,7 @@ async function post(url, body, headers = {}) {
 
 // ── 测试 6：日志 ──
 {
-  const logFile = path.join(ROOT, 'targets', 'workbuddy', 'logs', 'gateway.log');
+  const logFile = path.join(ROOT, 'gateway', 'logs', 'gateway.log');
   const lines = fs.readFileSync(logFile, 'utf8').trim().split('\n').map(l => JSON.parse(l));
   const failLines = lines.filter(l => l.failed);
   check('日志记录了失败转移', failLines.length >= 1 && failLines.some(l => l.alias === 'glm-fallback'));

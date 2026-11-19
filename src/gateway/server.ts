@@ -19,7 +19,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { readRoutes, resolveBackends, deriveImagesUrl, type RouteEntry, type ResolvedBackend } from './routes.js';
-import { dataDir } from '../paths.js';
+import { dataDir, gatewayDataDir } from '../paths.js';
 import { responsesToChat, chatToResponses, ChatToResponsesStreamer } from './responses.js';
 import { BackendHealthTable, DEFAULT_HEALTH_CONFIG } from './health.js';
 
@@ -75,7 +75,7 @@ export function startGatewayServer(options: GatewayOptions): Promise<http.Server
     const bootRoutes = readRoutes(root);
     const port = options.port ?? bootRoutes.port;
     const host = options.host ?? '127.0.0.1';
-    const logDir = options.logDir ?? path.join(dataDir(root), 'logs');
+    const logDir = options.logDir ?? path.join(gatewayDataDir(), 'logs');
     fs.mkdirSync(logDir, { recursive: true });
     const logFile = path.join(logDir, LOG_NAME);
 

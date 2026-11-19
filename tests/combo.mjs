@@ -266,7 +266,7 @@ run(['add', 'srcDead', '--from', path.join(ROOT, 'models-d.json')]);
   check('重试逻辑执行（耗时 > 200ms，含重试间隔）', elapsed >= 200, `elapsed=${elapsed}ms`);
 
   // 日志验证 give-up
-  const logFile = dataPath('logs', 'gateway.log');
+  const logFile = gatewayPath('logs', 'gateway.log');
   const logLines = fs.readFileSync(logFile, 'utf8').trim().split('\n').map(l => JSON.parse(l));
   check('日志记录 give-up（重试后切源）', logLines.some(l => l.failed && l.failed.includes('give-up')));
 
