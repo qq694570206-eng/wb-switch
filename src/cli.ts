@@ -66,6 +66,8 @@ import {
 import { readSettings, writeSettings } from './settings.js';
 import { cmdGateway } from './gateway/cli.js';
 import { cmdCombo, cmdAppend } from './combo-cli.js';
+import { cmdImage } from './image-cli.js';
+import { runMcpServer } from './mcp.js';
 import { loadProfile } from './profiles.js';
 import { useCombo, type ConflictPolicy } from './appender.js';
 import { probeProvider, probeModel, updateHealth, readHealth, type ProbeResult } from './gateway/probe.js';
@@ -86,7 +88,7 @@ import {
   warn,
 } from './ui.js';
 
-const VERSION = '2.0.0';
+const VERSION = '2.1.0';
 
 /** 超过这个模型数，切换时给出醒目提醒（不硬拦，只提醒） */
 const MODEL_COUNT_WARN = 50;
@@ -1805,6 +1807,12 @@ async function main(argv: string[]): Promise<number> {
         return cmdAppend(args);
       case 'health':
         return await cmdHealth(args);
+      case 'image':
+      case 'img':
+        return await cmdImage(args);
+      case 'mcp':
+        await runMcpServer({ configDir: args.configDir });
+        return ExitCode.OK;
       default: {
         // 未识别的命令：若恰好是源名，则当作切换
         const r = a2root(args);

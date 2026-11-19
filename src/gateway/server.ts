@@ -18,7 +18,7 @@ import { request as httpsRequest } from 'node:https';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { readRoutes, resolveBackends, type RouteEntry, type ResolvedBackend } from './routes.js';
+import { readRoutes, resolveBackends, deriveImagesUrl, type RouteEntry, type ResolvedBackend } from './routes.js';
 import { BackendHealthTable, DEFAULT_HEALTH_CONFIG } from './health.js';
 
 export interface GatewayOptions {
@@ -48,6 +48,8 @@ const MAX_BODY = 64 * 1024 * 1024;
 const TRANSIENT_RETRIES = 3;
 /** 首字节超时（ms）：连接 + 等响应头 */
 const FIRST_BYTE_TIMEOUT_MS = 15_000;
+/** 图片生成请求超时（ms）：U1.5 实测 ~100s，放宽到 5min 上限 */
+const IMAGES_TIMEOUT_MS = 5 * 60_000;
 /** 全链默认预算（ms） */
 const DEFAULT_BUDGET_MS = 60_000;
 const BACKOFF_BASE_MS = 500;
@@ -164,7 +166,8 @@ export function startGatewayServer(options: GatewayOptions): Promise<http.Server
       }
 
       const isChat = req.method === 'POST' && (url.endsWith('/chat/completions') || url.endsWith('/completions'));
-      if (!isChat) {
+      const isImages = req.method === 'POST' && (url.endsWith('/images/generations') || url.endsWith('/images/edits'));
+      if (!isChat && !isImages) {
         res.writeHead(404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: `wb-gateway: 不支持的路径 ${url}` } }));
         return;
@@ -198,11 +201,36 @@ export function startGatewayServer(options: GatewayOptions): Promise<http.Server
         return;
       }
 
+      // ── 图片模型的 chat 适配：把 chat 请求翻译成 images 请求 ──
+      // WorkBuddy 发 chat（messages），网关侧转换：prompt 取最后一条 user 文本，
+      // 有图片输入（image_url）则走 edits，否则 generations；
+      // images 响应包装回 chat 格式（content = markdown 图链），WorkBuddy 零改动。
+      let forwardBody = body;
+      let imagesMode: 'generations' | 'edits' | null = null;
+      if (route.kind === 'image' && isChat) {
+        const adapted = adaptChatToImages(body, route.alias);
+        if (typeof adapted === 'string') {
+          // 无法适配（如空 prompt）：直接 400，不进转发
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: `wb-gateway: ${adapted}` } }));
+          return;
+        }
+        forwardBody = Buffer.from(JSON.stringify(adapted.payload), 'utf8');
+        imagesMode = adapted.mode;
+      } else if (route.kind === 'image' && isImages) {
+        // 客户端直接发 OpenAI Images 请求：原样透传（只需记录模式）
+        imagesMode = url.endsWith('/images/edits') ? 'edits' : 'generations';
+        // 响应不做 chat 包装：原样返回
+      } else if (route.kind !== 'image' && isImages) {
+        // chat 模型收到了 images 请求：透传到该后端的 images 端点（尽力而为）
+        imagesMode = url.endsWith('/images/edits') ? 'edits' : 'generations';
+      }
+
       // ── 客户端取消传播 ──
       let clientGone = false;
       res.on('close', () => { clientGone = true; });
 
-      const backends = resolveBackends(root, route.backends);
+      const backends = resolveBackends(root, route.backends, { kind: route.kind });
       const usable = backends.filter(b => !b.error);
       if (usable.length === 0) {
         res.writeHead(502, { 'Content-Type': 'application/json' });
@@ -216,7 +244,11 @@ export function startGatewayServer(options: GatewayOptions): Promise<http.Server
       const ordered = scheduleBackends(route, usable, cfg.scheduling, rrCursors, health);
 
       // ── 主循环 ──
-      const deadline = started + cfg.budgetMs;
+      // 图片生成是长任务（U1.5 实测 ~100s）：image 路由预算放宽到 IMAGES_TIMEOUT + 余量，
+      // 普通请求维持 budgetMs 不变
+      const isImageRoute = route.kind === 'image';
+      const effectiveBudget = isImageRoute ? Math.max(cfg.budgetMs, IMAGES_TIMEOUT_MS + 30_000) : cfg.budgetMs;
+      const deadline = started + effectiveBudget;
       const attemptsLog: string[] = [];
       let lastFailure = '';
 
@@ -257,7 +289,11 @@ export function startGatewayServer(options: GatewayOptions): Promise<http.Server
             if (clientGone) break;
             if (Date.now() >= deadline) break;
 
-            const result = await forwardOnce(req, body, backend, res, isLast, rid, route.alias, started, attempt, writeLog);
+            const result = await forwardOnce(req, forwardBody, backend, res, isLast, rid, route.alias, started, attempt, writeLog, {
+              imagesMode,
+              wrapAsChat: route.kind === 'image' && isChat,
+              alias: route.alias,
+            });
             if (result.outcome === 'ok') {
               health.recordOk(bKey, Date.now() - started);
               attemptsLog.push(`${bKey}:ok`);
@@ -317,6 +353,14 @@ export function startGatewayServer(options: GatewayOptions): Promise<http.Server
       detail?: string;
     }
 
+    interface ImagesContext {
+      /** 本请求应打到 images 的哪个端点（null = 普通 chat 转发） */
+      imagesMode: 'generations' | 'edits' | null;
+      /** 成功后是否把 images 响应包装成 chat completions 格式（chat 适配用） */
+      wrapAsChat: boolean;
+      alias: string;
+    }
+
     async function forwardOnce(
       req: http.IncomingMessage,
       body: Buffer,
@@ -328,9 +372,14 @@ export function startGatewayServer(options: GatewayOptions): Promise<http.Server
       started: number,
       attempt: number,
       writeLog: (l: LogLine) => void,
+      imagesCtx?: ImagesContext,
     ): Promise<ForwardResult> {
-      const target = new URL(backend.url);
+      // 图片请求：端点从 chat url 换成 images/generations|edits
+      let target = new URL(backend.url);
       const isTls = target.protocol === 'https:';
+      if (imagesCtx?.imagesMode) {
+        target = new URL(deriveImagesUrl(backend.url, imagesCtx.imagesMode));
+      }
       const backendLabel = `${backend.profile}/${backend.model}`;
       const bKey = backendLabel;
 
@@ -419,7 +468,32 @@ export function startGatewayServer(options: GatewayOptions): Promise<http.Server
               return;
             }
 
-            // ── 成功（2xx）：直接流式透传 ──
+            // ── 成功（2xx）：按需处理 ──
+            if (imagesCtx?.wrapAsChat) {
+              // chat 适配：缓存整个 images 响应，包装成 chat completions 后返回
+              const chunks: Buffer[] = [];
+              upstreamRes.on('data', (c: Buffer) => chunks.push(c));
+              upstreamRes.on('end', () => {
+                const raw = Buffer.concat(chunks).toString('utf8');
+                const wrapped = wrapImagesAsChat(raw, imagesCtx.alias, rid);
+                try {
+                  res.writeHead(200, { 'Content-Type': 'application/json' });
+                  res.end(wrapped);
+                } catch { /* ignore */ }
+                writeLog({ ts: now(), rid, alias, backend: backendLabel, status, ms: Date.now() - started, bytes: Buffer.byteLength(raw), outcome: 'ok', failed: imagesCtx.imagesMode ?? undefined });
+                finish({ outcome: 'ok' });
+              });
+              upstreamRes.on('error', err => {
+                try {
+                  res.writeHead(502, { 'Content-Type': 'application/json' });
+                  res.end(JSON.stringify({ error: { message: `wb-gateway: 图片上游中断：${err.message}`, rid } }));
+                } catch { /* ignore */ }
+                finish({ outcome: 'ok' });
+              });
+              return;
+            }
+
+            // 普通 chat：直接流式透传
             const outHeaders: Record<string, string | string[]> = {};
             for (const [k, v] of Object.entries(upstreamRes.headers)) {
               const key = k.toLowerCase();
@@ -474,8 +548,11 @@ export function startGatewayServer(options: GatewayOptions): Promise<http.Server
         );
 
         // 首字节超时
-        upstreamReq.setTimeout(FIRST_BYTE_TIMEOUT_MS, () => {
-          upstreamReq.destroy(new Error(`first-byte timeout ${FIRST_BYTE_TIMEOUT_MS}ms`));
+        // 首字节超时：图片生成是长任务（SenseNova U1.5 实测 ~100s 整包返回），
+        // 图片请求放宽到 IMAGES_TIMEOUT_MS；普通 chat 保持 15s
+        const timeoutMs = imagesCtx?.imagesMode ? IMAGES_TIMEOUT_MS : FIRST_BYTE_TIMEOUT_MS;
+        upstreamReq.setTimeout(timeoutMs, () => {
+          upstreamReq.destroy(new Error(`first-byte timeout ${timeoutMs}ms`));
         });
 
         upstreamReq.on('error', err => {
@@ -554,6 +631,121 @@ export function startGatewayServer(options: GatewayOptions): Promise<http.Server
         }));
       } catch { /* ignore */ }
     }
+  });
+}
+
+// ─────────────────────────── 图片 chat 适配（模块级辅助） ───────────────────────────
+
+/**
+ * 把 OpenAI Chat 请求翻译成 SenseNova Images（OpenAI Images 兼容）请求。
+ * 提取规则：
+ *   - prompt：messages 里最后一条 user 的文本内容（多条拼接）
+ *   - 图片：messages 里所有 image_url（http(s) 或 data: URL）→ images[]（edits 模式）
+ *   - 有图 → edits；无图 → generations
+ *   - size/response_format/output_format/watermark/prompt_extend/n 透传顶层字段（若客户端有传）
+ * 返回 string = 适配失败原因（如空 prompt）；否则 { payload, mode }。
+ */
+function adaptChatToImages(
+  body: Buffer,
+  _alias: string,
+): { payload: Record<string, unknown>; mode: 'generations' | 'edits' } | string {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(body.toString('utf8')) as Record<string, unknown>;
+  } catch {
+    return 'body 不是合法 JSON';
+  }
+  const messages = Array.isArray(parsed.messages) ? (parsed.messages as unknown[]) : [];
+
+  // 收集最后一条 user 的文本 + 全部图片
+  let prompt = '';
+  const imageUrls: string[] = [];
+  for (const msgRaw of messages) {
+    const msg = msgRaw as { role?: unknown; content?: unknown };
+    if (msg?.role !== 'user') continue;
+    const content = msg.content;
+    const texts: string[] = [];
+    if (typeof content === 'string') {
+      texts.push(content);
+    } else if (Array.isArray(content)) {
+      for (const part of content as Array<{ type?: string; text?: string; image_url?: { url?: string } }>) {
+        if (part?.type === 'text' && typeof part.text === 'string') texts.push(part.text);
+        if (part?.type === 'image_url' && typeof part.image_url?.url === 'string') imageUrls.push(part.image_url.url);
+      }
+    }
+    if (texts.length) prompt = texts.join('\n');
+  }
+  if (!prompt.trim() && imageUrls.length === 0) {
+    return '图片模型需要在消息中提供 prompt（文本描述）';
+  }
+
+  const payload: Record<string, unknown> = {
+    model: parsed.model,
+    prompt: prompt.trim() || '编辑这张图片',
+  };
+
+  // 透传客户端显式给的可选参数（不在 chat 请求里，通常没有——保底用对生成友好的默认值）
+  if (typeof parsed.size === 'string') payload.size = parsed.size;
+  if (typeof parsed.response_format === 'string') payload.response_format = parsed.response_format;
+  if (typeof parsed.output_format === 'string') payload.output_format = parsed.output_format;
+  if (typeof parsed.watermark === 'boolean') payload.watermark = parsed.watermark;
+  if (typeof parsed.prompt_extend === 'boolean') payload.prompt_extend = parsed.prompt_extend;
+  if (typeof parsed.n === 'number') payload.n = parsed.n;
+
+  if (imageUrls.length > 0) {
+    payload.images = imageUrls.slice(0, 5).map(u => ({ image_url: u }));
+    return { payload, mode: 'edits' };
+  }
+  return { payload, mode: 'generations' };
+}
+
+/**
+ * 把 Images 响应（data[].url 或 data[].b64_json）包装成 chat completions。
+ * content = markdown 图链（url 直接引用；b64 内联 data URI——注意体积）。
+ */
+function wrapImagesAsChat(raw: string, alias: string, rid: string): string {
+  let resp: {
+    created?: number;
+    data?: Array<{ url?: string; b64_json?: string }>;
+    size?: string;
+    output_format?: string;
+    usage?: Record<string, unknown>;
+  };
+  try {
+    resp = JSON.parse(raw);
+  } catch {
+    // 非 JSON：包成错误
+    return JSON.stringify({
+      error: { message: `wb-gateway: 图片上游返回非 JSON 内容`, request_id: rid },
+    });
+  }
+  const items = Array.isArray(resp.data) ? resp.data : [];
+  const links: string[] = [];
+  for (const it of items) {
+    if (typeof it?.url === 'string') links.push(`![${alias}](${it.url})`);
+    else if (typeof it?.b64_json === 'string') links.push(`![${alias}](data:image/${resp.output_format ?? 'png'};base64,${it.b64_json})`);
+  }
+  const content = links.length
+    ? `已生成 ${links.length} 张图片：\n\n${links.join('\n\n')}`
+    : '图片生成未返回任何结果';
+
+  return JSON.stringify({
+    id: `chatcmpl-img-${rid}`,
+    object: 'chat.completion',
+    created: resp.created ?? Math.floor(Date.now() / 1000),
+    model: alias,
+    choices: [{
+      index: 0,
+      message: { role: 'assistant', content },
+      finish_reason: 'stop',
+    }],
+    usage: resp.usage
+      ? {
+          prompt_tokens: (resp.usage as { input_tokens?: number }).input_tokens ?? 0,
+          completion_tokens: (resp.usage as { output_tokens?: number }).output_tokens ?? 0,
+          total_tokens: (resp.usage as { total_tokens?: number }).total_tokens ?? 0,
+        }
+      : undefined,
   });
 }
 

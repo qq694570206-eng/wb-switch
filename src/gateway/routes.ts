@@ -45,6 +45,13 @@ export interface RouteBackend {
 export interface RouteEntry {
   /** WorkBuddy 里看到的模型名（全局唯一） */
   alias: string;
+  /**
+   * 路由类型：
+   *   - chat（缺省）：OpenAI Chat 端点（/v1/chat/completions）
+   *   - image：图片生成/编辑端点（/v1/images/generations|edits，
+   *     SenseNova U1.5 等 OpenAI Images 兼容供应商）
+   */
+  kind?: 'chat' | 'image';
   /** 有序后端列表，按顺序尝试 */
   backends: RouteBackend[];
 }
@@ -89,10 +96,25 @@ export function readRoutes(root: string): RoutesFile {
     const alias = typeof obj.alias === 'string' ? obj.alias.trim() : '';
     if (!alias || seen.has(alias)) continue; // 重复 / 空 alias 直接忽略
     const backends = Array.isArray(obj.backends) ? obj.backends : [];
-    entries.push({ alias, backends: backends.filter(b => b && typeof b === 'object') as RouteBackend[] });
+    const kind = obj.kind === 'image' ? 'image' : 'chat';
+    entries.push({ alias, kind, backends: backends.filter(b => b && typeof b === 'object') as RouteBackend[] });
     seen.add(alias);
   }
   return { port, retry, scheduling, budgetMs, routes: entries };
+}
+
+/**
+ * 图片端点推导：从 chat/completions URL 推导 images 端点。
+ *   https://host/v1/chat/completions → https://host/v1/images/generations
+ * 兼容已存的裸 /v1、/v1/chat/completions、/v1/completions 形态。
+ */
+export function deriveImagesUrl(chatUrl: string, kind: 'generations' | 'edits'): string {
+  let u = chatUrl.replace(/\/+$/, '');
+  u = u.replace(/\/chat\/completions$/, '');
+  u = u.replace(/\/completions$/, '');
+  // 现在应到 /v1（或没有 /v1）
+  if (!/\/v\d+$/.test(u)) u += '/v1';
+  return `${u}/images/${kind}`;
 }
 
 /** 校验 alias 合法性 */
@@ -141,7 +163,7 @@ export function addRoute(
   root: string,
   alias: string,
   backends: RouteBackend[],
-  options: { force?: boolean } = {},
+  options: { force?: boolean; kind?: 'chat' | 'image' } = {},
 ): RoutesFile {
   const norm = validateAlias(alias);
   const file = readRoutes(root);
@@ -151,9 +173,9 @@ export function addRoute(
       '换个别名，或用 --force 覆盖已有路由。',
     );
   }
-  if (backends.length === 0) throw new UsageError('至少需要一个后端（--profile <源> --model <模型ID>）。');
+  if (backends.length === 0) throw new UsageError('至少需要一个后端（--profile <源> --模型ID>）。');
   file.routes = file.routes.filter(r => r.alias !== norm);
-  file.routes.push({ alias: norm, backends });
+  file.routes.push({ alias: norm, kind: options.kind === 'image' ? 'image' : undefined, backends });
   file.routes.sort((a, b) => a.alias.localeCompare(b.alias, 'zh-CN'));
   writeRoutes(root, file);
   return file;
@@ -179,7 +201,13 @@ export interface ResolvedBackend {
   error?: string;
 }
 
-export function resolveBackends(root: string, backends: RouteBackend[]): ResolvedBackend[] {
+export function resolveBackends(
+  root: string,
+  backends: RouteBackend[],
+  _options: { kind?: 'chat' | 'image' } = {},
+): ResolvedBackend[] {
+  // 注意：这里始终返回源里保存的 chat url；图片端点推导统一由
+  // server.forwardOnce 按 imagesMode 处理（避免双重推导）。
   return backends.map(b => {
     try {
       const profile = loadProfile(root, b.profile);
@@ -236,10 +264,12 @@ export function buildGatewayModels(file: RoutesFile, port: number): import('../t
     id: r.alias,
     name: r.alias,
     vendor: 'wb-gateway',
+    // 图片模型也统一指向 chat 端点：网关会在 chat 适配层把请求转成 images 调用，
+    // WorkBuddy 侧零改动（聊天框里 @ 该模型发 prompt 即可生图）
     url: `http://127.0.0.1:${port}/v1/chat/completions`,
     apiKey: 'wb-gateway',
     supportsToolCall: true,
-    supportsImages: false,
+    supportsImages: r.kind === 'image' ? true : false,
     supportsReasoning: false,
     useCustomProtocol: false,
   }));

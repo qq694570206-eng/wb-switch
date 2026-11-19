@@ -314,6 +314,47 @@ wb-switch combo remove mymix
 
 组合成员经本地网关转发（`127.0.0.1:7533`），记得网关在跑：`wb-switch gateway start`。普通源的 `use`（整体替换）逻辑完全不变，两者并存。
 
+## 图片生成（v2.1）：SenseNova U1.5 等图片模型对接
+
+图片模型（商汤 SenseNova U1.5 Lite / Fast 等）与 chat 模型共用同一套源体系（Bearer key、profiles、网关调度/熔断/预算全复用），仅端点不同（`/v1/images/generations`、`/v1/images/edits`）。
+
+```bash
+# 1. 源模型列表导入后，手动标记为图片生成模型（写入 api=images）
+wb-switch image mark <源名> <模型ID>        # 例：image mark 183 sensenova-u1.5-lite
+wb-switch image unmark <源名> <模型ID>     # 取消标记
+wb-switch image models                     # 列出全部图片模型
+
+# 2. 配置图片路由（多源 fallback 与 chat 路由一致）
+wb-switch image route add u1.5-lite --profile 183 --model sensenova-u1.5-lite --profile2 131 --model2 sensenova-u1.5-lite
+
+# 3. 生成 / 编辑（自动拉起网关；结果含 CDN URL 或落盘路径）
+wb-switch image gen u1.5-lite "一只白色海豹宝宝" --size 1024x1024 --format png
+wb-switch image edit u1.5-lite "换成夜景" --images /path/to/img.png
+```
+
+**两个调用入口**（都与现有模型调用方式一致）：
+
+| 入口 | 说明 |
+|---|---|
+| **OpenAI Images API** | `POST http://127.0.0.1:7533/v1/images/generations`（model 填路由别名），`/v1/images/edits` 同理 |
+| **chat 兼容入口** | 普通 `/v1/chat/completions` 请求发给 image 路由也可——网关自动提取 prompt/图片、包装回 chat 响应（markdown 图链），WorkBuddy 无需改动即可用 |
+| **MCP 接口** | `wb-switch mcp`（stdio JSON-RPC），工具：`generate_image` / `edit_image` / `list_models`，图片自动下载落盘，供 WorkBuddy 或任意 agent 调用 |
+
+**接入 WorkBuddy 的 MCP 配置示例**（`~/.workbuddy/mcp.json`）：
+
+```json
+{
+  "mcpServers": {
+    "wb-switch-image": {
+      "command": "wb-switch",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+**SenseNova 适配要点**：图片生成是长任务（U1.5 实测 ~100s），image 路由首字节超时放宽到 150s、预算 ≥180s；配额型 429（`token plan entitlement exhausted`）零重试冷却 30min 后切下一源；URL 仅 24h 有效，`image gen` 默认自动下载落盘。
+
 ## 从源码构建
 
 ```bash
@@ -322,7 +363,7 @@ npm run gui            # 开发模式直接开窗口
 npm run build:app      # 只构建 app 目录（build/app）
 npm run build:win       # 打包安装版 + 免安装版 → dist-app/
 npm run build:exe      # 打包命令行单文件 exe → dist-exe/（按需）
-npm test               # 51 命令行 + 27 模型获取 + 6 协议 + 15 网关 + 33 网关调度 + 30 组合断言
+npm test               # 51 命令行 + 27 模型获取 + 6 协议 + 15 网关 + 33 网关调度 + 30 组合 + 31 图片对接断言
 npm run clean          # 清掉全部构建产物，只留 exe 与源码
 ```
 
